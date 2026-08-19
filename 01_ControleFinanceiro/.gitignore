@@ -1,3 +1,8 @@
 .env
-*.txt
+.nicegui/
 01. Suporte/
+*.csv
+Teste*.py
+GestaoContratos*.py
+Grafico4.py
+NiceGUI1.py
