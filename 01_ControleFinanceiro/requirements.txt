@@ -1,4 +1,0 @@
-nicegui
-pillow
-requests
-supabase
