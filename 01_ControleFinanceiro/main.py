@@ -481,11 +481,16 @@ def despesas_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
+    # Opções do Banco de Dados
     contas_res = supabase.table('dim_contas').select("*").order('nome').execute()
     contas_opts = {c['id']: c['nome'] for c in (contas_res.data or [])}
 
     pgtos_res = supabase.table('dim_formas_pgto').select("*").order('nome').execute()
     pgtos_opts = {p['id']: p['nome'] for p in (pgtos_res.data or [])}
+
+    # Nome exato da tabela no Supabase: dim_categorias
+    cat_res = supabase.table('dim_categorias').select("*").order('nome').execute()
+    cat_opts = {cat['id']: cat['nome'] for cat in (cat_res.data or [])}
 
     rec_res = supabase.table('fato_receitas').select("*").eq('user_id', user_id).execute()
     rec_opts = {r['id']: f"{r['descricao']} (R$ {formatar_br(r['valor'])})" for r in (rec_res.data or [])}
@@ -502,6 +507,7 @@ def despesas_page():
                 dia_limite = ui.input('Dia do Vencimento').props('outlined bg-white').classes('w-full sm:w-40')
 
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center mt-2'):
+                cat_sel = ui.select(options=cat_opts, label='Categoria').props('outlined bg-white').classes('w-full sm:flex-1')
                 conta_sel = ui.select(options=contas_opts, label='Fonte de pagamento').props('outlined bg-white').classes('w-full sm:flex-1')
                 pgto_sel = ui.select(options=pgtos_opts, label='Forma de Pagamento').props('outlined bg-white').classes('w-full sm:flex-1')
                 rec_sel = ui.select(options=rec_opts, label='Receita utilizada para o pagamento').props('outlined bg-white').classes('w-full sm:flex-1')
@@ -529,6 +535,7 @@ def despesas_page():
                     'descricao': desc.value.strip(),
                     'valor': float(valor.value),
                     'dia_limite': dia_limite.value.strip() if dia_limite.value else 'Indefinido',
+                    'categoria_id': cat_sel.value,
                     'conta_id': conta_sel.value,
                     'forma_pgto_id': pgto_sel.value,
                     'receita_id': rec_sel.value,
@@ -542,12 +549,13 @@ def despesas_page():
 
             ui.button('Salvar Despesa', on_click=salvar_despesa, icon='add').classes('w-full sm:w-auto bg-red-700 text-white font-bold mt-3')
 
-        res_desp = supabase.table('fato_despesas').select("*, dim_contas(nome), dim_formas_pgto(nome), fato_receitas(descricao)").eq('user_id', user_id).order('created_at', desc=True).execute()
+        res_desp = supabase.table('fato_despesas').select("*, dim_categorias(nome), dim_contas(nome), dim_formas_pgto(nome), fato_receitas(descricao)").eq('user_id', user_id).order('created_at', desc=True).execute()
         despesas_raw = res_desp.data or []
 
         rows = [{
             'id': d['id'],
             'descricao': d['descricao'],
+            'categoria': d['dim_categorias']['nome'] if d.get('dim_categorias') else 'Sem Categoria',
             'conta': d['dim_contas']['nome'] if d.get('dim_contas') else 'N/A',
             'forma_pgto': d['dim_formas_pgto']['nome'] if d.get('dim_formas_pgto') else 'N/A',
             'receita': d['fato_receitas']['descricao'] if d.get('fato_receitas') else 'N/A',
@@ -558,7 +566,8 @@ def despesas_page():
 
         cols = [
             {'name': 'descricao', 'label': 'Descrição', 'field': 'descricao', 'align': 'left'},
-            {'name': 'conta', 'label': 'Ação', 'field': 'conta', 'align': 'left'},
+            {'name': 'categoria', 'label': 'Categoria', 'field': 'categoria', 'align': 'left'},
+            {'name': 'conta', 'label': 'Ação/Conta', 'field': 'conta', 'align': 'left'},
             {'name': 'forma_pgto', 'label': 'Forma Pgto', 'field': 'forma_pgto', 'align': 'left'},
             {'name': 'receita', 'label': 'Saldada por', 'field': 'receita', 'align': 'left'},
             {'name': 'dia_limite', 'label': 'Dia Limite', 'field': 'dia_limite', 'align': 'center'},
@@ -589,6 +598,7 @@ def despesas_page():
                 edit_dia = ui.input('Dia do Vencimento').props('outlined bg-white').classes('flex-1')
 
             with ui.column().classes('w-full gap-2 mt-2'):
+                edit_cat = ui.select(options=cat_opts, label='Categoria').props('outlined bg-white').classes('w-full')
                 edit_conta = ui.select(options=contas_opts, label='Fonte de pagamento').props('outlined bg-white').classes('w-full')
                 edit_pgto = ui.select(options=pgtos_opts, label='Forma de Pagamento').props('outlined bg-white').classes('w-full')
                 edit_rec = ui.select(options=rec_opts, label='Receita utilizada').props('outlined bg-white').classes('w-full')
@@ -615,6 +625,7 @@ def despesas_page():
                         'descricao': edit_desc.value.strip(),
                         'valor': float(edit_valor.value),
                         'dia_limite': edit_dia.value.strip() if edit_dia.value else 'Indefinido',
+                        'categoria_id': edit_cat.value,
                         'conta_id': edit_conta.value,
                         'forma_pgto_id': edit_pgto.value,
                         'receita_id': edit_rec.value,
@@ -642,6 +653,7 @@ def despesas_page():
                 edit_desc.value = desp_orig.get('descricao', '')
                 edit_valor.value = desp_orig.get('valor', 0.0)
                 edit_dia.value = desp_orig.get('dia_limite', '')
+                edit_cat.value = desp_orig.get('categoria_id')
                 edit_conta.value = desp_orig.get('conta_id')
                 edit_pgto.value = desp_orig.get('forma_pgto_id')
                 edit_rec.value = desp_orig.get('receita_id')
@@ -662,6 +674,8 @@ def despesas_page():
         grid.on('editar', abrir_edicao)
         grid.on('deletar', deletar_despesa)
 
+
+from datetime import datetime
 
 # --- TELA DE PLANEJAMENTO / FILTRO MENSAL ---
 @ui.page('/planejar')
@@ -701,7 +715,7 @@ def planejar_page():
                 ).props('outlined bg-white use-chips clearable').classes('w-full sm:flex-1')
 
         # Áreas de Conteúdo
-        container_lista = ui.column().classes('w-full gap-2')
+        container_lista = ui.column().classes('w-full gap-4')
         container_subtotais_acao = ui.column().classes('w-full mt-2')
         container_resumo = ui.column().classes('w-full sm:flex-row gap-3 mt-2')
 
@@ -760,7 +774,8 @@ def planejar_page():
             if not isinstance(r_vals, list):
                 r_vals = [r_vals]
 
-            query = supabase.table('fato_despesas').select("*, dim_contas(nome), dim_formas_pgto(nome), fato_receitas(id, descricao, valor)").eq('user_id', user_id)
+            # Consulta com o nome exato da tabela de categorias (dim_categorias)
+            query = supabase.table('fato_despesas').select("*, dim_categorias(nome), dim_contas(nome), dim_formas_pgto(nome), fato_receitas(id, descricao, valor)").eq('user_id', user_id)
             res = query.execute()
             despesas_todas = res.data or []
 
@@ -788,7 +803,30 @@ def planejar_page():
                 if not despesas_filtradas:
                     ui.label('Nenhuma despesa para este mês/filtro.').classes('text-gray-500 italic p-4 text-center w-full')
                 else:
+                    # 1. Agrupamento inicial por Categoria
+                    categorias_agrupadas = {}
                     for d in despesas_filtradas:
+                        cat_nome = d['dim_categorias']['nome'] if d.get('dim_categorias') else 'Sem Categoria'
+                        if cat_nome not in categorias_agrupadas:
+                            categorias_agrupadas[cat_nome] = []
+                        categorias_agrupadas[cat_nome].append(d)
+
+                    # 2. Separação: Categorias com múltiplos itens vs. Categorias com 1 único item
+                    cats_com_varios = {}
+                    cats_singulares_nomes = []
+                    itens_singulares = []
+
+                    for cat_nome in sorted(categorias_agrupadas.keys()):
+                        itens = categorias_agrupadas[cat_nome]
+                        if len(itens) > 1:
+                            cats_com_varios[cat_nome] = itens
+                        else:
+                            cats_singulares_nomes.append(cat_nome)
+                            itens_singulares.extend(itens)
+
+                    # Função auxiliar para renderizar cada card de despesa
+                    def renderizar_card_despesa(d):
+                        nonlocal total_desp
                         d_id = d['id']
                         val = d['valor']
                         total_desp += val
@@ -816,6 +854,25 @@ def planejar_page():
                                 with ui.column().classes('items-end gap-0 ml-auto text-right min-w-[120px]'):
                                     ui.label(f"R$ {formatar_br(val)}").classes(f'font-black text-sm sm:text-base {"line-through text-gray-400" if esta_pago else "text-red-700"}')
                                     ui.label(f"{conta_p} ({rec_p})").classes('text-xs text-purple-700 font-medium break-words max-w-[180px] text-right')
+
+                    # 3. Renderiza primeiro as categorias com +1 item
+                    for cat_nome, lista_cat in cats_com_varios.items():
+                        lista_cat.sort(key=lambda x: x.get('descricao', '').lower())
+
+                        with ui.column().classes('w-full gap-2'):
+                            ui.label(f'🏷️ {cat_nome}').classes('text-base font-bold text-purple-900 border-b border-purple-200 pb-1 w-full mt-2')
+                            for d in lista_cat:
+                                renderizar_card_despesa(d)
+
+                    # 4. Renderiza o grupo unificado de categorias com apenas 1 item
+                    if itens_singulares:
+                        itens_singulares.sort(key=lambda x: x.get('descricao', '').lower())
+                        titulo_agrupado = " / ".join(cats_singulares_nomes)
+
+                        with ui.column().classes('w-full gap-2'):
+                            ui.label(f'🏷️ {titulo_agrupado}').classes('text-base font-bold text-purple-900 border-b border-purple-200 pb-1 w-full mt-2')
+                            for d in itens_singulares:
+                                renderizar_card_despesa(d)
 
             # --- SUBTOTAIS POR MEIO DE PAGAMENTO ---
             with container_subtotais_acao:
@@ -974,6 +1031,8 @@ def admin_page():
         criar_gerenciador_dimensao("3. Contas / Ações", "dim_contas")               
 
 
+from datetime import datetime
+
 # --- SAÚDE FINANCEIRA / DASHBOARD (HOME) ---
 @ui.page('/')
 def home_page():
@@ -985,7 +1044,7 @@ def home_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
-    # Estado de privacidade (inicia como True para abrir no modo oculto) e controle de ano
+    # Estado de privacidade e controle de ano
     modo_privado = {'ativo': True}
     ano_atual_ref = datetime.now().year
 
@@ -993,7 +1052,7 @@ def home_page():
     rec_res = supabase.table('fato_receitas').select("*").eq('user_id', user_id).execute()
     receitas_lista = rec_res.data or []
 
-    desp_res = supabase.table('fato_despesas').select("*").eq('user_id', user_id).execute()
+    desp_res = supabase.table('fato_despesas').select("*, dim_categorias(nome)").eq('user_id', user_id).execute()
     despesas_lista = desp_res.data or []
 
     # Opções do filtro de receitas
@@ -1058,6 +1117,10 @@ def home_page():
                 lbl_tot_saldo = ui.label('R$ ••••••').classes('text-xl sm:text-2xl font-black text-blue-950 mt-1')
 
         # 5. GRÁFICOS
+        with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
+            ui.label('Despesas por Categoria').classes('text-lg font-bold text-slate-800 mb-2')
+            chart_bar_cat = ui.echart({}).classes('w-full h-80')
+
         with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
             ui.label('Receitas X Despesas').classes('text-lg font-bold text-slate-800 mb-2')
             chart_cap_desp = ui.echart({}).classes('w-full h-80')
@@ -1138,6 +1201,8 @@ def home_page():
             saldos_acumulados = []
             acumulado = 0.0
 
+            despesas_por_categoria = {}
+
             for ano in range(a_ini, a_fim + 1):
                 sufixo_ano = f"/{str(ano)[2:]}"
                 for m in range(1, 13):
@@ -1166,6 +1231,11 @@ def home_page():
 
                     desp_mes = sum(float(d.get('valor', 0)) for d in desps_filtradas)
 
+                    for d in desps_filtradas:
+                        cat_nome = d['dim_categorias']['nome'] if d.get('dim_categorias') else 'Sem Categoria'
+                        val_d = float(d.get('valor', 0))
+                        despesas_por_categoria[cat_nome] = despesas_por_categoria.get(cat_nome, 0.0) + val_d
+
                     totais_receitas_mes.append(rec_mes)
                     totais_despesas_mes.append(desp_mes)
 
@@ -1191,21 +1261,68 @@ def home_page():
                 lbl_tot_desp.text = f"R$ {formatar_br(total_desp)}"
                 lbl_tot_saldo.text = f"R$ {formatar_br(saldo_final)}"
 
-            # Configurações de Formatação Reativas ao Modo Privacidade
-            axis_label_fmt = ' ' if priv_ativo else 'R$ {value}'
+            # Expressões JavaScript formatadoras para o ECharts (o prefixo ':' avisa o NiceGUI para tratar como JS puro)
+            js_formatter_eixo = "': (val) => \"R$ \" + Number(val).toLocaleString(\"pt-BR\", {minimumFractionDigits: 0, maximumFractionDigits: 0})'"
+            js_formatter_label = "': (p) => \"R$ \" + Number(p.value).toLocaleString(\"pt-BR\", {minimumFractionDigits: 2, maximumFractionDigits: 2})'"
+
+            # Dicionário dinâmico do eixo Y para alternar no modo de privacidade
+            y_axis_config = {
+                'type': 'value',
+                'axisLabel': {'formatter': ' '} if priv_ativo else {':formatter': 'value => "R$ " + Number(value).toLocaleString("pt-BR")'}
+            }
+
             tooltip_trigger = 'none' if priv_ativo else 'axis'
 
-            # --- GRÁFICO 1: CAPITAL X DESPESAS ---
+            # --- GRÁFICO 1: BARRAS HORIZONTAIS DE CATEGORIAS ---
+            cat_ordenadas = sorted(despesas_por_categoria.items(), key=lambda x: x[1])
+            cat_labels = [item[0] for item in cat_ordenadas if item[1] > 0]
+            cat_valores = [round(item[1], 2) for item in cat_ordenadas if item[1] > 0]
+
+            chart_bar_cat.options.clear()
+            
+            bar_series = {
+                'name': 'Total Gasto',
+                'type': 'bar',
+                'data': cat_valores,
+                'itemStyle': {
+                    'color': '#8b5cf6',
+                    'borderRadius': [0, 4, 4, 0]
+                },
+                'label': {
+                    'show': not priv_ativo,
+                    'position': 'right',
+                    ':formatter': 'p => "R$ " + Number(p.value).toLocaleString("pt-BR", {minimumFractionDigits: 2, maximumFractionDigits: 2})'
+                }
+            }
+
+            chart_bar_cat.options.update({
+                'grid': {'left': '18%', 'right': '15%', 'bottom': '10%', 'top': '5%', 'containLabel': True},
+                'tooltip': {
+                    'show': not priv_ativo,
+                    'trigger': 'axis',
+                    'axisPointer': {'type': 'shadow'}
+                },
+                'xAxis': {
+                    'type': 'value',
+                    'axisLabel': {'formatter': ' '} if priv_ativo else {':formatter': 'v => "R$ " + Number(v).toLocaleString("pt-BR")'}
+                },
+                'yAxis': {
+                    'type': 'category',
+                    'data': cat_labels,
+                    'axisLabel': {'fontSize': 12, 'color': '#334155'}
+                },
+                'series': [bar_series]
+            })
+            chart_bar_cat.update()
+
+            # --- GRÁFICO 2: CAPITAL X DESPESAS ---
             chart_cap_desp.options.clear()
             chart_cap_desp.options.update({
                 'grid': {'left': '10%', 'right': '5%', 'bottom': '15%', 'top': '10%'},
                 'tooltip': {'show': not priv_ativo, 'trigger': tooltip_trigger},
                 'legend': {'data': ['Despesas', 'Capital'], 'bottom': 0},
                 'xAxis': {'type': 'category', 'data': meses_labels},
-                'yAxis': {
-                    'type': 'value',
-                    'axisLabel': {'formatter': axis_label_fmt}
-                },
+                'yAxis': y_axis_config,
                 'series': [
                     {'name': 'Despesas', 'type': 'bar', 'data': [round(v, 2) for v in totais_despesas_mes], 'itemStyle': {'color': '#ef4444'}},
                     {'name': 'Capital', 'type': 'line', 'data': [round(v, 2) for v in totais_receitas_mes], 'itemStyle': {'color': '#3b82f6'}, 'lineStyle': {'type': 'dashed', 'width': 3}}
@@ -1213,16 +1330,13 @@ def home_page():
             })
             chart_cap_desp.update()
 
-            # --- GRÁFICO 2: SALDO MENSAL (LÍQUIDO) ---
+            # --- GRÁFICO 3: SALDO MENSAL (LÍQUIDO) ---
             chart_saldo_mes.options.clear()
             chart_saldo_mes.options.update({
                 'grid': {'left': '10%', 'right': '5%', 'bottom': '10%', 'top': '15%'},
                 'tooltip': {'show': not priv_ativo, 'trigger': tooltip_trigger},
                 'xAxis': {'type': 'category', 'data': meses_labels},
-                'yAxis': {
-                    'type': 'value',
-                    'axisLabel': {'formatter': axis_label_fmt}
-                },
+                'yAxis': y_axis_config,
                 'series': [{
                     'name': 'Saldo do Mês',
                     'type': 'line',
@@ -1256,16 +1370,13 @@ def home_page():
             })
             chart_saldo_mes.update()
 
-            # --- GRÁFICO 3: PROJEÇÃO - SALDO ACUMULADO ---
+            # --- GRÁFICO 4: PROJEÇÃO - SALDO ACUMULADO ---
             chart_proj.options.clear()
             chart_proj.options.update({
                 'grid': {'left': '10%', 'right': '5%', 'bottom': '10%', 'top': '10%'},
                 'tooltip': {'show': not priv_ativo, 'trigger': tooltip_trigger},
                 'xAxis': {'type': 'category', 'data': meses_labels},
-                'yAxis': {
-                    'type': 'value',
-                    'axisLabel': {'formatter': axis_label_fmt}
-                },
+                'yAxis': y_axis_config,
                 'series': [{
                     'name': 'Saldo Acumulado',
                     'type': 'line',
