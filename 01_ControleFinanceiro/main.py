@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import smtplib
+import logging
 
 import requests
 from datetime import datetime
@@ -11,8 +12,7 @@ from email.mime.multipart import MIMEMultipart
 
 from nicegui import app, ui
 from supabase import create_client, Client
-
-import logging
+from dotenv import load_dotenv
 
 # Silencia avisos inofensivos de desconexão de socket no terminal
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -23,9 +23,6 @@ def formatar_br(valor) -> str:
         return f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except (ValueError, TypeError):
         return "0,00"
-
-import os
-from dotenv import load_dotenv
 
 # Carrega as variáveis do arquivo .env
 load_dotenv()
@@ -44,6 +41,8 @@ MESES_NOMES = {
     1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
     7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
 }
+
+MESES_SIGLAS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
 
 def email_valido(email_str: str) -> bool:
@@ -83,6 +82,19 @@ def _enviar_email_worker(solicitante_email, dispositivo, localizacao):
 
 def enviar_notificacao_email(solicitante_email, dispositivo, localizacao):
     threading.Thread(target=_enviar_email_worker, args=(solicitante_email, dispositivo, localizacao), daemon=True).start()
+
+# --- HELPER DE VALIDAÇÃO DE OCORRÊNCIA MENSAL ---
+def receita_ocorre_no_mes_ano(rec: dict, mes: int, ano: int) -> bool:
+    ano_ini = int(rec.get('ano_inicio') or 2025)
+    ano_fim = int(rec.get('ano_fim') or 2200)
+    meses_str = str(rec.get('meses') or '')
+
+    if not (ano_ini <= ano <= ano_fim):
+        return False
+        
+    # Garante correspondência exata do mês (ex: ".11.")
+    return f".{mes}." in meses_str
+
 
 # --- MENU DRAWER & CABEÇALHO ---
 def menu_drawer():
@@ -188,6 +200,7 @@ def cabecalho_app(drawer):
         ui.label('💰 Controle Financeiro').classes('text-base sm:text-lg font-bold truncate')
         ui.label(user_email.split('@')[0]).classes('text-xs bg-blue-700 px-2 py-1 rounded')
 
+
 # --- LOGIN ---
 @ui.page('/login')
 def login_page():
@@ -216,11 +229,9 @@ def login_page():
                 except:
                     pass
 
-                # 1. Notifica o usuário e fecha o modal IMEDIATAMENTE (evita travar no mobile)
                 ui.notify('Processando solicitação...', color='info')
                 dialog.close()
 
-                # 2. Insere no Supabase
                 try:
                     supabase.table('solicitacoes_acesso').insert({
                         'created_at': obter_hora_brasilia().isoformat(),
@@ -232,7 +243,6 @@ def login_page():
                 except Exception as e:
                     print(f"Erro ao salvar no banco: {e}")
 
-                # 3. Dispara o e-mail
                 try:
                     enviar_notificacao_email(email_txt, user_agent, loc_text)
                     ui.notify('Solicitação enviada com sucesso!', color='positive')
@@ -245,7 +255,6 @@ def login_page():
         
         dialog.open()
 
-    # --- CARD DE LOGIN E FUNÇÃO TRY_LOGIN ---
     with ui.card().classes('w-11/12 max-w-sm absolute-center p-6 shadow-xl rounded-xl'):
         ui.label('Controle Financeiro').classes('text-2xl font-bold text-blue-800 text-center w-full mb-4')
         email = ui.input('E-mail').props('outlined').classes('w-full mb-2')
@@ -287,7 +296,7 @@ def receitas_page():
     contas_res = supabase.table('dim_contas').select("*").order('nome').execute()
     contas_opts = {c['id']: c['nome'] for c in (contas_res.data or [])}
 
-    with ui.column().classes('w-full max-w-4xl mx-auto p-3 sm:p-4 gap-4'):
+    with ui.column().classes('w-full max-w-5xl mx-auto p-3 sm:p-4 gap-4'):
         ui.label('💵 Planejar Receitas').classes('text-xl sm:text-2xl font-bold text-green-800')
 
         # --- FORMULÁRIO DE NOVA RECEITA ---
@@ -298,15 +307,32 @@ def receitas_page():
                 valor = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('w-full sm:w-36')
                 conta_sel = ui.select(options=contas_opts, label='Conta / Ação').props('outlined bg-white').classes('w-full sm:w-48')
 
+            ui.label('Meses em que a receita ocorre:').classes('text-sm font-bold text-gray-700 mt-2')
+            
+            meses_checks = {}
+            with ui.row().classes('w-full gap-2 wrap bg-white p-2 border rounded'):
+                for m_num, m_nome in MESES_NOMES.items():
+                    meses_checks[m_num] = ui.checkbox(m_nome, value=True)
+
+            with ui.row().classes('w-full gap-3 items-center mt-2'):
+                ano_ini = ui.number('Ano Início', value=2025, format='%d').props('outlined bg-white').classes('w-full sm:w-32')
+                ano_fim = ui.number('Ano Fim', value=2200, format='%d').props('outlined bg-white').classes('w-full sm:w-32')
+
             def salvar_receita():
                 if not desc.value or not valor.value or not conta_sel.value:
-                    ui.notify('Preencha todos os campos!', color='warning')
+                    ui.notify('Preencha os campos obrigatórios!', color='warning')
                     return
+
+                meses_str = "." + ".".join([str(m) for m, chk in meses_checks.items() if chk.value]) + "."
+
                 supabase.table('fato_receitas').insert({
                     'user_id': user_id,
                     'descricao': desc.value.strip(),
                     'valor': float(valor.value),
-                    'conta_id': conta_sel.value
+                    'conta_id': conta_sel.value,
+                    'meses': meses_str,
+                    'ano_inicio': int(ano_ini.value or 2025),
+                    'ano_fim': int(ano_fim.value or 2200)
                 }).execute()
                 ui.notify('Receita salva!', color='positive')
                 ui.navigate.reload()
@@ -321,10 +347,15 @@ def receitas_page():
                 ui.button('Cancelar', on_click=confirm_edit_dialog.close).props('flat color=grey')
                 def executar_atualizacao():
                     try:
+                        meses_str = "." + ".".join([str(m) for m, chk in edit_meses_checks.items() if chk.value]) + "."
+
                         supabase.table('fato_receitas').update({
                             'descricao': edit_desc.value.strip(),
                             'valor': float(edit_val.value),
-                            'conta_id': edit_conta.value
+                            'conta_id': edit_conta.value,
+                            'meses': meses_str,
+                            'ano_inicio': int(edit_ano_ini.value or 2025),
+                            'ano_fim': int(edit_ano_fim.value or 2200)
                         }).eq('id', edit_id.value).execute()
 
                         ui.notify('Receita atualizada com sucesso!', color='positive')
@@ -336,13 +367,25 @@ def receitas_page():
                 ui.button('Confirmar', on_click=executar_atualizacao).props('color=primary unelevated')
 
         # --- MODAL DE EDIÇÃO ---
-        with ui.dialog() as modal_editar, ui.card().classes('w-full max-w-md p-6 gap-4'):
+        with ui.dialog() as modal_editar, ui.card().classes('w-full max-w-2xl p-6 gap-4'):
             ui.label('Editar Receita').classes('text-xl font-bold text-slate-800')
             
             edit_id = ui.input().classes('hidden')
             edit_desc = ui.input('Descrição').props('outlined bg-white').classes('w-full')
-            edit_val = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('w-full')
-            edit_conta = ui.select(options=contas_opts, label='Conta / Ação').props('outlined bg-white').classes('w-full')
+            
+            with ui.row().classes('w-full gap-2'):
+                edit_val = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('flex-1')
+                edit_conta = ui.select(options=contas_opts, label='Conta / Ação').props('outlined bg-white').classes('flex-1')
+
+            ui.label('Meses em que a receita ocorre:').classes('text-sm font-bold text-gray-700 mt-2')
+            edit_meses_checks = {}
+            with ui.row().classes('w-full gap-2 wrap bg-white p-2 border rounded'):
+                for m_num, m_nome in MESES_NOMES.items():
+                    edit_meses_checks[m_num] = ui.checkbox(m_nome)
+
+            with ui.row().classes('w-full gap-2 mt-2'):
+                edit_ano_ini = ui.number('Ano Início', format='%d').props('outlined bg-white').classes('flex-1')
+                edit_ano_fim = ui.number('Ano Fim', format='%d').props('outlined bg-white').classes('flex-1')
 
             def validar_e_confirmar_edicao():
                 if not edit_desc.value or edit_val.value is None or not edit_conta.value:
@@ -371,21 +414,24 @@ def receitas_page():
 
         # --- CARREGAMENTO DAS LINHAS DA TABELA ---
         res_receitas = supabase.table('fato_receitas').select("*, dim_contas(nome)").eq('user_id', user_id).order('created_at', desc=True).execute()
+        receitas_raw = res_receitas.data or []
         
         rows = [{
             'id': r['id'],
             'descricao': r['descricao'],
-            'valor': f"R$ {r['valor']:.2f}",
+            'valor': f"R$ {formatar_br(r['valor'])}",
             'valor_raw': r['valor'],
             'conta_id': r.get('conta_id'),
-            'conta': r['dim_contas']['nome'] if r.get('dim_contas') else 'N/A'
-        } for r in (res_receitas.data or [])]
+            'conta': r['dim_contas']['nome'] if r.get('dim_contas') else 'N/A',
+            'meses': r.get('meses', 'Todos')
+        } for r in receitas_raw]
 
         cols = [
             {'name': 'descricao', 'label': 'Descrição', 'field': 'descricao', 'align': 'left'},
             {'name': 'conta', 'label': 'Conta / Ação', 'field': 'conta', 'align': 'left'},
+            {'name': 'meses', 'label': 'Meses', 'field': 'meses', 'align': 'center'},
             {'name': 'valor', 'label': 'Valor', 'field': 'valor', 'align': 'right'},
-            {'name': 'id', 'label': '', 'field': 'id', 'align': 'right'}
+            {'name': 'id', 'label': 'Ações', 'field': 'id', 'align': 'center'}
         ]
 
         grid = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full mt-4')
@@ -400,11 +446,22 @@ def receitas_page():
 
         def abrir_edicao_grid(msg):
             row = msg.args
-            edit_id.value = str(row['id'])
-            edit_desc.value = row['descricao']
-            edit_val.value = row['valor_raw']
-            edit_conta.value = row['conta_id']
-            modal_editar.open()
+            r_id = row['id']
+            rec_orig = next((r for r in receitas_raw if str(r['id']) == str(r_id)), None)
+
+            if rec_orig:
+                edit_id.value = str(rec_orig['id'])
+                edit_desc.value = rec_orig.get('descricao', '')
+                edit_val.value = rec_orig.get('valor', 0.0)
+                edit_conta.value = rec_orig.get('conta_id')
+                edit_ano_ini.value = rec_orig.get('ano_inicio', 2025)
+                edit_ano_fim.value = rec_orig.get('ano_fim', 2200)
+
+                m_str = rec_orig.get('meses', '')
+                for m_num, chk in edit_meses_checks.items():
+                    chk.value = f".{m_num}." in m_str
+
+                modal_editar.open()
 
         def solicitar_delecao(msg):
             item_para_deletar['id'] = msg.args['id']
@@ -914,11 +971,12 @@ def admin_page():
 # --- 3. SEÇÃO DAS TABELAS DIMENSÃO ---
         criar_gerenciador_dimensao("1. Categorias de Despesas", "dim_categorias")
         criar_gerenciador_dimensao("2. Formas de Pagamento", "dim_formas_pgto")
-        criar_gerenciador_dimensao("3. Contas / Ações", "dim_contas")       
+        criar_gerenciador_dimensao("3. Contas / Ações", "dim_contas")               
 
-# --- DASHBOARD PRINCIPAL (MODO CAPA SEGURO & MODERNO) ---
+
+# --- SAÚDE FINANCEIRA / DASHBOARD (HOME) ---
 @ui.page('/')
-def main_page():
+def home_page():
     if not app.storage.user.get('user_id'):
         ui.navigate.to('/login')
         return
@@ -927,300 +985,324 @@ def main_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
-    # Estado de privacidade (Modo Seguro: ocultar valores por padrão ao abrir)
-    mostra_valores = {'visivel': False}
+    # Estado de privacidade e controle de ano
+    modo_privado = {'ativo': False}
+    ano_atual_ref = datetime.now().year
 
+    # Buscar dados do Supabase
     rec_res = supabase.table('fato_receitas').select("*").eq('user_id', user_id).execute()
     receitas_lista = rec_res.data or []
-    
-    rec_opts = {'TODAS': 'Todas as Receitas'}
-    rec_opts.update({r['id']: f"{r['descricao']} (R$ {formatar_br(r['valor'])})" for r in receitas_lista})
 
-    # Ano atual dinâmico
-    ano_atual = datetime.now().year
+    desp_res = supabase.table('fato_despesas').select("*").eq('user_id', user_id).execute()
+    despesas_lista = desp_res.data or []
 
-    # Determinar saudação com base no horário
-    hora = datetime.now().hour
-    if hora < 12:
-        saudacao = "Bom dia"
-        icone_saudacao = "wb_sunny"
-    elif hora < 18:
-        saudacao = "Boa tarde"
-        icone_saudacao = "wb_twilight"
-    else:
-        saudacao = "Boa noite"
-        icone_saudacao = "nights_stay"
+    # Opções do filtro de receitas
+    opts_receitas = {'todas': 'Todas as Receitas'}
+    for r in receitas_lista:
+        desc = r.get('descricao', 'Receita')
+        val = float(r.get('valor', 0))
+        opts_receitas[str(r['id'])] = f"{desc} (R$ {formatar_br(val)})"
 
-    with ui.column().classes('w-full max-w-5xl mx-auto p-3 sm:p-6 gap-6'):
+    with ui.column().classes('w-full max-w-6xl mx-auto p-3 sm:p-4 gap-5'):
         
-        # --- 1. HERO CAPA MODERNA & SAUDAÇÃO ---
-        with ui.card().classes('w-full p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white shadow-xl relative overflow-hidden border border-slate-800'):
-            ui.element('div').classes('absolute -right-10 -bottom-10 w-60 h-60 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none')
-            ui.element('div').classes('absolute -left-10 -top-10 w-60 h-60 bg-blue-500/10 rounded-full blur-3xl pointer-events-none')
-
-            with ui.row().classes('w-full justify-between items-center z-10 wrap gap-4'):
-                with ui.column().classes('gap-1'):
-                    with ui.row().classes('items-center gap-2 text-indigo-300 font-medium text-sm sm:text-base'):
-                        #ui.icon(icone_saudacao, size='20px')
-                        #ui.label(f'{saudacao}!')
-                        ui.label('Saúde Financeira').classes('text-2xl sm:text-4xl font-extrabold tracking-tight text-white')
-                    ui.label('Gerencie suas metas e despesas com tranquilidade e privacidade.').classes('text-slate-400 text-xs sm:text-sm mt-1')
-
-                btn_privacidade = ui.button(
-                    icon='visibility_off', 
-                    on_click=lambda: alternar_privacidade()
-                ).props('round flat size=lg color=white').classes('bg-white/10 hover:bg-white/20 backdrop-blur-md transition-all')
-                btn_privacidade.tooltip('Alternar exibição de valores')
-
-        # --- 2. ACESSO RÁPIDO (TELAS EXISTENTES) ---
-        ui.label('⚡ Ações Rápidas').classes('text-lg font-bold text-slate-800 -mb-2')
-        with ui.row().classes('w-full grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4'):
+        # 1. BANNER TOPO COM PRIVACIDADE
+        with ui.card().classes('w-full p-6 bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-900 text-white rounded-2xl shadow-xl flex flex-row justify-between items-center'):
+            with ui.column().classes('gap-1'):
+                ui.label('Saúde Financeira').classes('text-2xl sm:text-3xl font-black tracking-tight')
+                ui.label('Gerencie suas metas e despesas com tranquilidade e privacidade.').classes('text-xs sm:text-sm text-slate-300')
             
-            with ui.card().classes('p-4 rounded-xl border border-slate-200 hover:border-red-400 hover:shadow-md transition-all cursor-pointer bg-white items-center text-center group') \
+            btn_privacidade = ui.button(
+                icon='visibility_off', 
+                on_click=lambda: alternar_privacidade()
+            ).props('flat round color=white size=lg').classes('bg-white/10 hover:bg-white/20')
+
+        # 2. AÇÕES RÁPIDAS
+        ui.label('⚡ Ações Rápidas').classes('text-sm font-bold text-slate-700 tracking-wide uppercase mt-1')
+        with ui.row().classes('w-full gap-4'):
+            with ui.card().classes('flex-1 p-4 border border-slate-200 rounded-xl shadow-sm hover:shadow-md cursor-pointer items-center justify-center transition-all bg-white') \
                     .on('click', lambda: ui.navigate.to('/despesas')):
-                ui.icon('add_shopping_cart', size='32px').classes('text-red-500 group-hover:scale-110 transition-transform mb-1')
-                ui.label('Nova Despesa').classes('font-semibold text-slate-700 text-xs sm:text-sm')
+                ui.icon('shopping_cart', size='32px').classes('text-red-500 mb-1')
+                ui.label('Nova Despesa').classes('text-sm font-bold text-slate-700')
 
-            with ui.card().classes('p-4 rounded-xl border border-slate-200 hover:border-green-400 hover:shadow-md transition-all cursor-pointer bg-white items-center text-center group') \
+            with ui.card().classes('flex-1 p-4 border border-slate-200 rounded-xl shadow-sm hover:shadow-md cursor-pointer items-center justify-center transition-all bg-white') \
                     .on('click', lambda: ui.navigate.to('/receitas')):
-                ui.icon('attach_money', size='32px').classes('text-green-500 group-hover:scale-110 transition-transform mb-1')
-                ui.label('Nova Receita').classes('font-semibold text-slate-700 text-xs sm:text-sm')
+                ui.icon('attach_money', size='32px').classes('text-green-500 mb-1')
+                ui.label('Nova Receita').classes('text-sm font-bold text-slate-700')
 
-        # --- 3. PAINEL PROTEGIDO (VALORES & GRÁFICOS) ---
-        with ui.row().classes('w-full justify-between items-center mt-2'):
-            ui.label('📊 Visão Geral do Período').classes('text-lg font-bold text-slate-800')
-            
-        # Filtros
-        with ui.card().classes('w-full p-3 sm:p-4 border rounded-xl bg-slate-50 shadow-sm border-slate-200'):
-            with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center'):
-                sel_ano_ini = ui.number('Ano Início', value=ano_atual, format='%d').props('outlined bg-white step=1').classes('w-full sm:w-36')
-                sel_ano_fim = ui.number('Ano Fim', value=ano_atual, format='%d').props('outlined bg-white step=1').classes('w-full sm:w-36')
+        # 3. BARRA DE FILTROS DO PERÍODO
+        ui.label('📊 Visão Geral do Período').classes('text-sm font-bold text-slate-700 tracking-wide uppercase mt-2')
+        with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
+            with ui.row().classes('w-full gap-3 items-center flex-wrap sm:flex-nowrap'):
+                f_ano_ini = ui.number('Ano Início', value=ano_atual_ref, format='%d').props('outlined bg-slate-50 dense').classes('w-full sm:w-32')
+                f_ano_fim = ui.number('Ano Fim', value=ano_atual_ref, format='%d').props('outlined bg-slate-50 dense').classes('w-full sm:w-32')
                 
-                sel_receita = ui.select(
-                    options=rec_opts, 
-                    value=['TODAS'], 
+                f_receitas = ui.select(
+                    options=opts_receitas, 
+                    value=['todas'], 
                     multiple=True, 
                     label='Filtrar por Receita'
-                ).props('outlined bg-white use-chips clearable').classes('w-full sm:flex-1')
+                ).props('outlined bg-slate-50 dense use-chips clearable').classes('w-full flex-1')
 
-        container_cards = ui.column().classes('w-full sm:flex-row gap-3')
-        card_grafico1 = ui.card().classes('w-full p-2 sm:p-4 border rounded-xl shadow-sm bg-white')
-        card_grafico2 = ui.card().classes('w-full p-2 sm:p-4 border rounded-xl shadow-sm bg-white')
+        # 4. CARDS DE RESUMO (KPIs)
+        with ui.row().classes('w-full gap-4'):
+            with ui.card().classes('flex-1 p-4 bg-emerald-50/60 border border-emerald-200 rounded-xl shadow-sm'):
+                ui.label('TOTAL RECEITAS (PERÍODO)').classes('text-[11px] font-bold text-emerald-700 tracking-wider')
+                lbl_tot_rec = ui.label('R$ 0,00').classes('text-xl sm:text-2xl font-black text-emerald-950 mt-1')
 
-        def alternar_privacidade():
-            mostra_valores['visivel'] = not mostra_valores['visivel']
-            btn_privacidade.props(f'icon={"visibility" if mostra_valores["visivel"] else "visibility_off"}')
-            atualizar_dashboard()
+            with ui.card().classes('flex-1 p-4 bg-rose-50/60 border border-rose-200 rounded-xl shadow-sm'):
+                ui.label('TOTAL DESPESAS (PERÍODO)').classes('text-[11px] font-bold text-rose-700 tracking-wider')
+                lbl_tot_desp = ui.label('R$ 0,00').classes('text-xl sm:text-2xl font-black text-rose-950 mt-1')
 
-        def ao_mudar_receita(e=None):
-            if hasattr(e, 'value'):
-                valores = e.value or []
-            elif isinstance(e, (list, tuple)):
-                valores = list(e)
-            else:
-                valores = sel_receita.value or []
+            with ui.card().classes('flex-1 p-4 bg-blue-50/60 border border-blue-200 rounded-xl shadow-sm'):
+                ui.label('SALDO ACUMULADO').classes('text-[11px] font-bold text-blue-700 tracking-wider')
+                lbl_tot_saldo = ui.label('R$ 0,00').classes('text-xl sm:text-2xl font-black text-blue-950 mt-1')
 
-            if isinstance(valores, str):
-                valores = [valores]
+        # 5. GRÁFICOS
+        with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
+            ui.label('Capital X Despesas').classes('text-lg font-bold text-slate-800 mb-2')
+            chart_cap_desp = ui.echart({}).classes('w-full h-80')
 
-            if not valores:
-                sel_receita.value = ['TODAS']
-            elif 'TODAS' in valores and len(valores) > 1:
-                if valores[-1] == 'TODAS':
-                    sel_receita.value = ['TODAS']
+        with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
+            ui.label('Saldo Mensal (Líquido)').classes('text-lg font-bold text-slate-800 mb-2')
+            chart_saldo_mes = ui.echart({}).classes('w-full h-80')
+
+        with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
+            ui.label('Projeção - Saldo Acumulado').classes('text-lg font-bold text-slate-800 mb-2')
+            chart_proj = ui.echart({}).classes('w-full h-80')
+
+        # 6. LÓGICA DE RECALCULO E ATUALIZAÇÃO REATIVA
+        def despesa_ocorre_no_mes_ano(d, m, ano):
+            try:
+                ano_d_ini = int(d.get('ano_inicio') or 2025)
+                ano_d_fim = int(d.get('ano_fim') or 2200)
+            except (ValueError, TypeError):
+                ano_d_ini, ano_d_fim = 2025, 2200
+
+            if not (ano_d_ini <= ano <= ano_d_fim):
+                return False
+
+            meses_raw = str(d.get('meses') or '')
+            import re
+            meses_list = [int(x) for x in re.findall(r'\d+', meses_raw)]
+            return m in meses_list
+
+        processando_selecao = {'ativo': False}
+
+        def gerenciar_mudanca_receitas(e):
+            if processando_selecao['ativo']:
+                return
+
+            val_atual = f_receitas.value or []
+            if isinstance(val_atual, str):
+                val_atual = [val_atual]
+
+            novos_valores = list(val_atual)
+
+            if 'todas' in novos_valores and len(novos_valores) > 1:
+                if e.value and isinstance(e.value, list) and e.value[-1] == 'todas':
+                    novos_valores = ['todas']
                 else:
-                    sel_receita.value = [v for v in valores if v != 'TODAS']
+                    novos_valores = [v for v in novos_valores if v != 'todas']
+
+            if not novos_valores:
+                novos_valores = ['todas']
+
+            if novos_valores != val_atual:
+                processando_selecao['ativo'] = True
+                f_receitas.set_value(novos_valores)
+                processando_selecao['ativo'] = False
 
             atualizar_dashboard()
 
-        def mascarar_valor(valor_num):
-            if mostra_valores['visivel']:
-                return f"R$ {formatar_br(valor_num)}"
-            return "R$ ••••••"
+        def atualizar_dashboard():
+            try:
+                a_ini = int(f_ano_ini.value or ano_atual_ref)
+                a_fim = int(f_ano_fim.value or ano_atual_ref)
+            except (ValueError, TypeError):
+                a_ini, a_fim = ano_atual_ref, ano_atual_ref
 
-        def atualizar_dashboard(e=None):
-            container_cards.clear()
-            card_grafico1.clear()
-            card_grafico2.clear()
+            if a_fim < a_ini:
+                a_fim = a_ini
 
-            a_ini = int(sel_ano_ini.value or ano_atual)
-            a_fim = int(sel_ano_fim.value or ano_atual)
-            
-            r_vals = sel_receita.value or ['TODAS']
-            if not isinstance(r_vals, list):
-                r_vals = [r_vals]
+            rec_sel_raw = f_receitas.value or []
+            if isinstance(rec_sel_raw, str):
+                rec_sel_raw = [rec_sel_raw]
 
-            query_d = supabase.table('fato_despesas').select("*").eq('user_id', user_id)
-            despesas = query_d.execute().data or []
+            ids_selecionados_str = [str(x) for x in rec_sel_raw if str(x) != 'todas' and x is not None]
+            filtrar_especifico = len(ids_selecionados_str) > 0
 
-            if 'TODAS' in r_vals:
-                capital_mensal_base = sum([r['valor'] for r in receitas_lista])
-            else:
-                r_vals_ids = [int(v) if str(v).isdigit() else v for v in r_vals]
-                despesas = [d for d in despesas if d.get('receita_id') in r_vals_ids]
-                capital_mensal_base = sum([r['valor'] for r in receitas_lista if r['id'] in r_vals_ids])
-
-            eixo_x = []
-            dados_despesas = []
-            dados_capital = []
-            dados_acumulado = []
-
-            acumulado_saldo = 0.0
+            meses_labels = []
+            totais_receitas_mes = []
+            totais_despesas_mes = []
+            saldos_mensais = []
+            saldos_acumulados = []
+            acumulado = 0.0
 
             for ano in range(a_ini, a_fim + 1):
-                for mes in range(1, 13):
-                    label_mes = f"{MESES_NOMES[mes]}/{str(ano)[2:]}"
-                    str_mes = f".{mes}."
+                sufixo_ano = f"/{str(ano)[2:]}"
+                for m in range(1, 13):
+                    meses_labels.append(f"{MESES_NOMES[m]}{sufixo_ano}")
 
-                    total_desp_mes = 0.0
-                    for d in despesas:
-                        m_str = d.get('meses', '')
-                        ano_i = d.get('ano_inicio', 2000)
-                        ano_f = d.get('ano_fim', 2200)
-
-                        if str_mes in m_str and (ano_i <= ano <= ano_f):
-                            total_desp_mes += d['valor']
-
-                    sobra_mes = capital_mensal_base - total_desp_mes
-                    acumulado_saldo += sobra_mes
-
-                    eixo_x.append(label_mes)
-                    dados_despesas.append(round(total_desp_mes, 2))
-                    dados_capital.append(round(capital_mensal_base, 2))
-
-                    val_acum = round(acumulado_saldo, 2)
-                    cor_barra = '#22c55e' if val_acum >= 0 else '#ef4444'
-                    
-                    dados_acumulado.append({
-                        'value': val_acum,
-                        'itemStyle': {
-                            'color': cor_barra,
-                            'borderRadius': [4, 4, 0, 0] if val_acum >= 0 else [0, 0, 4, 4]
-                        }
-                    })
-
-            tot_receitas_periodo = sum(dados_capital)
-            tot_despesas_periodo = sum(dados_despesas)
-            saldo_periodo = tot_receitas_periodo - tot_despesas_periodo
-
-            # Definição das classes de cores do Card de Saldo Acumulado
-            if saldo_periodo >= 0:
-                card_saldo_classes = "bg-indigo-50 border-indigo-200"
-                texto_saldo_classes = "text-indigo-950"
-            else:
-                card_saldo_classes = "bg-red-50 border-red-200"
-                texto_saldo_classes = "text-red-600"
-
-            with container_cards:
-                with ui.card().classes('w-full sm:flex-1 bg-emerald-50 border border-emerald-200 p-4 rounded-xl shadow-sm'):
-                    ui.label('TOTAL RECEITAS (PERÍODO)').classes('text-xs font-bold text-emerald-900 uppercase tracking-wider')
-                    ui.label(mascarar_valor(tot_receitas_periodo)).classes('text-lg sm:text-xl font-black text-emerald-950')
-
-                with ui.card().classes('w-full sm:flex-1 bg-rose-50 border border-rose-200 p-4 rounded-xl shadow-sm'):
-                    ui.label('TOTAL DESPESAS (PERÍODO)').classes('text-xs font-bold text-rose-900 uppercase tracking-wider')
-                    ui.label(mascarar_valor(tot_despesas_periodo)).classes('text-lg sm:text-xl font-black text-rose-950')
-
-                with ui.card().classes(f'w-full sm:flex-1 {card_saldo_classes} p-4 border rounded-xl shadow-sm'):
-                    ui.label('SALDO ACUMULADO').classes('text-xs font-bold uppercase tracking-wider text-slate-700')
-                    ui.label(mascarar_valor(saldo_periodo)).classes(f'text-lg sm:text-xl font-black {texto_saldo_classes}')
-
-            y_formatter = 'R$ {value}' if mostra_valores['visivel'] else '••••'
-
-            # --- GRÁFICO 1: Capital X Despesas ---
-            with card_grafico1:
-                ui.label('Capital X Despesas').classes('text-base sm:text-lg font-bold text-slate-800 mb-2')
-                ui.echart({
-                    'tooltip': {
-                        'trigger': 'axis',
-                        'axisPointer': {'type': 'shadow'}
-                    },
-                    'legend': {'data': ['Despesas', 'Capital'], 'bottom': 0},
-                    'grid': {'left': '3%', 'right': '4%', 'bottom': '15%', 'containLabel': True},
-                    'xAxis': {'type': 'category', 'data': eixo_x},
-                    'yAxis': {
-                        'type': 'value',
-                        'axisLabel': {'formatter': y_formatter}
-                    },
-                    'series': [
-                        {
-                            'name': 'Despesas',
-                            'type': 'bar',
-                            'itemStyle': {'color': '#ef4444', 'borderRadius': [4, 4, 0, 0]},
-                            'data': dados_despesas
-                        },
-                        {
-                            'name': 'Capital',
-                            'type': 'line',
-                            'lineStyle': {'type': 'dashed', 'width': 3},
-                            'itemStyle': {'color': '#2563eb'},
-                            'symbolSize': 6,
-                            'data': dados_capital
-                        }
+                    # 1. RECEITAS
+                    recs_filtradas = [
+                        r for r in receitas_lista
+                        if receita_ocorre_no_mes_ano(r, m, ano) and 
+                        (not filtrar_especifico or str(r.get('id')) in ids_selecionados_str)
                     ]
-                }).classes('w-full h-64 sm:h-80')
+                    rec_mes = sum(float(r.get('valor', 0)) for r in recs_filtradas)
 
-            # --- GRÁFICO 2: Projeção - Total Acumulado ---
-            with card_grafico2:
-                ui.label('Projeção - Saldo Acumulado').classes('text-base sm:text-lg font-bold text-slate-800 mb-2')
-                ui.echart({
-                    'tooltip': {
-                        'trigger': 'axis',
-                        'axisPointer': {'type': 'shadow'}
+                    # 2. DESPESAS
+                    desps_filtradas = []
+                    for d in despesas_lista:
+                        if despesa_ocorre_no_mes_ano(d, m, ano):
+                            rec_id_despesa = d.get('receita_id')
+                            rec_id_str = str(rec_id_despesa) if rec_id_despesa not in (None, '', 'None', 'null') else None
+
+                            if filtrar_especifico:
+                                if rec_id_str and rec_id_str in ids_selecionados_str:
+                                    desps_filtradas.append(d)
+                            else:
+                                desps_filtradas.append(d)
+
+                    desp_mes = sum(float(d.get('valor', 0)) for d in desps_filtradas)
+
+                    totais_receitas_mes.append(rec_mes)
+                    totais_despesas_mes.append(desp_mes)
+
+                    saldo_mes = rec_mes - desp_mes
+                    saldos_mensais.append(saldo_mes)
+
+                    acumulado += saldo_mes
+                    saldos_acumulados.append(acumulado)
+
+            total_rec = sum(totais_receitas_mes)
+            total_desp = sum(totais_despesas_mes)
+            saldo_final = total_rec - total_desp
+
+            priv_ativo = modo_privado['ativo']
+
+            # Atualizar Rótulos dos Cards
+            if priv_ativo:
+                lbl_tot_rec.text = "R$ ••••••"
+                lbl_tot_desp.text = "R$ ••••••"
+                lbl_tot_saldo.text = "R$ ••••••"
+            else:
+                lbl_tot_rec.text = f"R$ {formatar_br(total_rec)}"
+                lbl_tot_desp.text = f"R$ {formatar_br(total_desp)}"
+                lbl_tot_saldo.text = f"R$ {formatar_br(saldo_final)}"
+
+            # Configurações de Formatação Reativas ao Modo Privacidade
+            axis_label_fmt = ' ' if priv_ativo else 'R$ {value}'
+            tooltip_trigger = 'none' if priv_ativo else 'axis'
+
+            # --- GRÁFICO 1: CAPITAL X DESPESAS ---
+            chart_cap_desp.options.clear()
+            chart_cap_desp.options.update({
+                'grid': {'left': '10%', 'right': '5%', 'bottom': '15%', 'top': '10%'},
+                'tooltip': {'show': not priv_ativo, 'trigger': tooltip_trigger},
+                'legend': {'data': ['Despesas', 'Capital'], 'bottom': 0},
+                'xAxis': {'type': 'category', 'data': meses_labels},
+                'yAxis': {
+                    'type': 'value',
+                    'axisLabel': {'formatter': axis_label_fmt}
+                },
+                'series': [
+                    {'name': 'Despesas', 'type': 'bar', 'data': [round(v, 2) for v in totais_despesas_mes], 'itemStyle': {'color': '#ef4444'}},
+                    {'name': 'Capital', 'type': 'line', 'data': [round(v, 2) for v in totais_receitas_mes], 'itemStyle': {'color': '#3b82f6'}, 'lineStyle': {'type': 'dashed', 'width': 3}}
+                ]
+            })
+            chart_cap_desp.update()
+
+# --- GRÁFICO 2: SALDO MENSAL (LÍQUIDO) ---
+            chart_saldo_mes.options.clear()
+            chart_saldo_mes.options.update({
+                'grid': {'left': '10%', 'right': '5%', 'bottom': '10%', 'top': '15%'},
+                'tooltip': {'show': not priv_ativo, 'trigger': tooltip_trigger},
+                'xAxis': {'type': 'category', 'data': meses_labels},
+                'yAxis': {
+                    'type': 'value',
+                    'axisLabel': {'formatter': axis_label_fmt}
+                },
+                'series': [{
+                    'name': 'Saldo do Mês',
+                    'type': 'line',
+                    'smooth': True,
+                    'symbolSize': 8,
+                    'lineStyle': {'width': 3, 'color': '#0284c7'},
+                    'itemStyle': {'color': '#0284c7'},
+                    'areaStyle': {
+                        'color': {
+                            'type': 'linear',
+                            'x': 0, 'y': 0, 'x2': 0, 'y2': 1,
+                            'colorStops': [
+                                {'offset': 0, 'color': 'rgba(2, 132, 199, 0.35)'},
+                                {'offset': 1, 'color': 'rgba(2, 132, 199, 0.02)'}
+                            ]
+                        }
                     },
-                    'grid': {'left': '3%', 'right': '4%', 'bottom': '10%', 'containLabel': True},
-                    'xAxis': {'type': 'category', 'data': eixo_x},
-                    'yAxis': {
-                        'type': 'value',
-                        'axisLabel': {'formatter': y_formatter}
+                    # Oculta os rótulos de dados no topo/base dos pontos
+                    'label': {
+                        'show': False
                     },
-                    'series': [{
-                        'name': 'Saldo Acumulado',
-                        'type': 'bar',
-                        'label': {'show': False},
-                        'data': dados_acumulado
-                    }]
-                }).classes('w-full h-64 sm:h-80')
+                    # Mapeia apenas as cores dos pontos individuais (Azul p/ Positivo | Vermelho p/ Negativo)
+                    'data': [
+                        {
+                            'value': round(v, 2),
+                            'itemStyle': {
+                                'color': '#0284c7' if v >= 0 else '#ef4444'
+                            }
+                        }
+                        for v in saldos_mensais
+                    ]
+                }]
+            })
+            chart_saldo_mes.update()
+            
 
-        sel_ano_ini.on('update:model-value', atualizar_dashboard)
-        sel_ano_fim.on('update:model-value', atualizar_dashboard)
-        sel_receita.on('update:model-value', ao_mudar_receita)
+            # --- GRÁFICO 3: PROJEÇÃO - SALDO ACUMULADO ---
+            chart_proj.options.clear()
+            chart_proj.options.update({
+                'grid': {'left': '10%', 'right': '5%', 'bottom': '10%', 'top': '10%'},
+                'tooltip': {'show': not priv_ativo, 'trigger': tooltip_trigger},
+                'xAxis': {'type': 'category', 'data': meses_labels},
+                'yAxis': {
+                    'type': 'value',
+                    'axisLabel': {'formatter': axis_label_fmt}
+                },
+                'series': [{
+                    'name': 'Saldo Acumulado',
+                    'type': 'line',
+                    'smooth': True,
+                    'symbolSize': 6,
+                    'lineStyle': {'width': 3, 'color': '#16a34a'},
+                    'itemStyle': {'color': '#16a34a'},
+                    'areaStyle': {
+                        'color': {
+                            'type': 'linear',
+                            'x': 0, 'y': 0, 'x2': 0, 'y2': 1,
+                            'colorStops': [
+                                {'offset': 0, 'color': 'rgba(22, 163, 74, 0.35)'},
+                                {'offset': 1, 'color': 'rgba(22, 163, 74, 0.02)'}
+                            ]
+                        }
+                    },
+                    'data': [round(v, 2) for v in saldos_acumulados]
+                }]
+            })
+            chart_proj.update()
 
+        def alternar_privacidade():
+            modo_privado['ativo'] = not modo_privado['ativo']
+            btn_privacidade.props(f"icon={'visibility' if modo_privado['ativo'] else 'visibility_off'}")
+            atualizar_dashboard()
+
+        # Gatilhos reativos
+        f_ano_ini.on_value_change(lambda: atualizar_dashboard())
+        f_ano_fim.on_value_change(lambda: atualizar_dashboard())
+        f_receitas.on_value_change(gerenciar_mudanca_receitas)
+
+        # Execução inicial
         atualizar_dashboard()
 
-# ==============================================================================
-# CONFIGURAÇÕES GLOBAIS
-# ==============================================================================
-import os
-
-# Obtém o caminho absoluto da pasta onde o main.py está localizado
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, 'static')
-FAVICON_PATH = os.path.join(BASE_DIR, 'favicon.ico')
-
-# Registra a pasta static usando o caminho correto
-if os.path.exists(STATIC_DIR):
-    app.add_static_files('/static', STATIC_DIR)
-
-# Metadados para instalação PWA / Mobile (com shared=True ativado)
-ui.add_head_html('''
-    <link rel="apple-touch-icon" sizes="192x192" href="/static/icon-192.png">
-    <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="theme-color" content="#2563eb">
-''', shared=True)
-
-# ==============================================================================
-# INICIALIZAÇÃO DO SERVIDOR (ÚLTIMAS LINHAS DO ARQUIVO)
-# ==============================================================================
-
-if __name__ in {"__main__", "__mp_main__"}:
-    port = int(os.environ.get("PORT", 8080))
-    ui.run(
-        title='Controle Financeiro',
-        favicon=FAVICON_PATH if os.path.exists(FAVICON_PATH) else None,
-        storage_secret='minha_chave_secreta_local_123',
-        host='0.0.0.0',
-        port=port,
-        reload=False
-    )
+# Inicializa App NiceGUI
+ui.run(title='Controle Financeiro', storage_secret='chave_secreta_super_segura_123')
