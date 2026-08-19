@@ -985,8 +985,8 @@ def home_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
-    # Estado de privacidade e controle de ano
-    modo_privado = {'ativo': False}
+    # Estado de privacidade (inicia como True para abrir no modo oculto) e controle de ano
+    modo_privado = {'ativo': True}
     ano_atual_ref = datetime.now().year
 
     # Buscar dados do Supabase
@@ -1047,23 +1047,23 @@ def home_page():
         with ui.row().classes('w-full gap-4'):
             with ui.card().classes('flex-1 p-4 bg-emerald-50/60 border border-emerald-200 rounded-xl shadow-sm'):
                 ui.label('TOTAL RECEITAS (PERÍODO)').classes('text-[11px] font-bold text-emerald-700 tracking-wider')
-                lbl_tot_rec = ui.label('R$ 0,00').classes('text-xl sm:text-2xl font-black text-emerald-950 mt-1')
+                lbl_tot_rec = ui.label('R$ ••••••').classes('text-xl sm:text-2xl font-black text-emerald-950 mt-1')
 
             with ui.card().classes('flex-1 p-4 bg-rose-50/60 border border-rose-200 rounded-xl shadow-sm'):
                 ui.label('TOTAL DESPESAS (PERÍODO)').classes('text-[11px] font-bold text-rose-700 tracking-wider')
-                lbl_tot_desp = ui.label('R$ 0,00').classes('text-xl sm:text-2xl font-black text-rose-950 mt-1')
+                lbl_tot_desp = ui.label('R$ ••••••').classes('text-xl sm:text-2xl font-black text-rose-950 mt-1')
 
             with ui.card().classes('flex-1 p-4 bg-blue-50/60 border border-blue-200 rounded-xl shadow-sm'):
                 ui.label('SALDO ACUMULADO').classes('text-[11px] font-bold text-blue-700 tracking-wider')
-                lbl_tot_saldo = ui.label('R$ 0,00').classes('text-xl sm:text-2xl font-black text-blue-950 mt-1')
+                lbl_tot_saldo = ui.label('R$ ••••••').classes('text-xl sm:text-2xl font-black text-blue-950 mt-1')
 
         # 5. GRÁFICOS
         with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
-            ui.label('Capital X Despesas').classes('text-lg font-bold text-slate-800 mb-2')
+            ui.label('Receitas X Despesas').classes('text-lg font-bold text-slate-800 mb-2')
             chart_cap_desp = ui.echart({}).classes('w-full h-80')
 
         with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
-            ui.label('Saldo Mensal (Líquido)').classes('text-lg font-bold text-slate-800 mb-2')
+            ui.label('Saldo Mensal').classes('text-lg font-bold text-slate-800 mb-2')
             chart_saldo_mes = ui.echart({}).classes('w-full h-80')
 
         with ui.card().classes('w-full p-4 border border-slate-200 rounded-xl shadow-sm bg-white'):
@@ -1213,7 +1213,7 @@ def home_page():
             })
             chart_cap_desp.update()
 
-# --- GRÁFICO 2: SALDO MENSAL (LÍQUIDO) ---
+            # --- GRÁFICO 2: SALDO MENSAL (LÍQUIDO) ---
             chart_saldo_mes.options.clear()
             chart_saldo_mes.options.update({
                 'grid': {'left': '10%', 'right': '5%', 'bottom': '10%', 'top': '15%'},
@@ -1240,11 +1240,9 @@ def home_page():
                             ]
                         }
                     },
-                    # Oculta os rótulos de dados no topo/base dos pontos
                     'label': {
                         'show': False
                     },
-                    # Mapeia apenas as cores dos pontos individuais (Azul p/ Positivo | Vermelho p/ Negativo)
                     'data': [
                         {
                             'value': round(v, 2),
@@ -1257,7 +1255,6 @@ def home_page():
                 }]
             })
             chart_saldo_mes.update()
-            
 
             # --- GRÁFICO 3: PROJEÇÃO - SALDO ACUMULADO ---
             chart_proj.options.clear()
@@ -1293,7 +1290,7 @@ def home_page():
 
         def alternar_privacidade():
             modo_privado['ativo'] = not modo_privado['ativo']
-            btn_privacidade.props(f"icon={'visibility' if modo_privado['ativo'] else 'visibility_off'}")
+            btn_privacidade.props(f"icon={'visibility_off' if modo_privado['ativo'] else 'visibility'}")
             atualizar_dashboard()
 
         # Gatilhos reativos
