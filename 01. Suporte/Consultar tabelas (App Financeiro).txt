@@ -1,7 +1,0 @@
-select * from public.perfis_usuarios
-select * from public.fato_despesas
-select * from public.fato_receitas
-
-https://controle-financeiro-wbb.onrender.com
-
-

@@ -6,3 +6,5 @@ Teste*.py
 GestaoContratos*.py
 Grafico4.py
 NiceGUI1.py
+*.txt
+.env
