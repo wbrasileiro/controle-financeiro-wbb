@@ -24,21 +24,15 @@ def formatar_br(valor) -> str:
     except (ValueError, TypeError):
         return "0,00"
 
-import os
-from dotenv import load_dotenv
-
-# Carrega as variáveis do arquivo .env
-load_dotenv()
-
 # --- CONFIGURAÇÕES ---
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mpqkefsjclczhhjhirgt.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = "https://mpqkefsjclczhhjhirgt.supabase.co"
+SUPABASE_KEY = "sb_publishable_5tNfIkOy_ONpFiccZcpc3A_wucCPk9h" 
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 ADMIN_EMAIL = "w.batista.brasileiro@gmail.com"
-GMAIL_USER = os.getenv("GMAIL_USER")
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS")
+
+GMAIL_USER = "w.batista.brasileiro@gmail.com"
+GMAIL_APP_PASS = "svecygnzudcfwgzq"
 
 MESES_NOMES = {
     1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
@@ -283,14 +277,12 @@ def receitas_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
-    # Busca dinâmica de contas no Supabase
     contas_res = supabase.table('dim_contas').select("*").order('nome').execute()
     contas_opts = {c['id']: c['nome'] for c in (contas_res.data or [])}
 
     with ui.column().classes('w-full max-w-4xl mx-auto p-3 sm:p-4 gap-4'):
         ui.label('💵 Planejar Receitas').classes('text-xl sm:text-2xl font-bold text-green-800')
 
-        # --- FORMULÁRIO DE NOVA RECEITA ---
         with ui.card().classes('w-full p-4 border border-green-200 rounded-lg shadow-sm bg-green-50'):
             ui.label('Nova Receita').classes('text-lg font-bold text-green-900 mb-2')
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center'):
@@ -313,71 +305,11 @@ def receitas_page():
 
             ui.button('Salvar Receita', on_click=salvar_receita, icon='add').classes('w-full sm:w-auto bg-green-700 text-white font-bold mt-2')
 
-        # --- MODAL DE CONFIRMAÇÃO DE EDIÇÃO ---
-        with ui.dialog() as confirm_edit_dialog, ui.card().classes('p-6 gap-4'):
-            ui.label('Confirmar Alteração').classes('text-lg font-bold text-slate-800')
-            ui.label('Deseja realmente salvar as alterações feitas nesta receita?')
-            with ui.row().classes('w-full justify-end gap-2'):
-                ui.button('Cancelar', on_click=confirm_edit_dialog.close).props('flat color=grey')
-                def executar_atualizacao():
-                    try:
-                        supabase.table('fato_receitas').update({
-                            'descricao': edit_desc.value.strip(),
-                            'valor': float(edit_val.value),
-                            'conta_id': edit_conta.value
-                        }).eq('id', edit_id.value).execute()
-
-                        ui.notify('Receita atualizada com sucesso!', color='positive')
-                        confirm_edit_dialog.close()
-                        modal_editar.close()
-                        ui.navigate.reload()
-                    except Exception as err:
-                        ui.notify(f'Erro ao atualizar: {err}', color='negative')
-                ui.button('Confirmar', on_click=executar_atualizacao).props('color=primary unelevated')
-
-        # --- MODAL DE EDIÇÃO ---
-        with ui.dialog() as modal_editar, ui.card().classes('w-full max-w-md p-6 gap-4'):
-            ui.label('Editar Receita').classes('text-xl font-bold text-slate-800')
-            
-            edit_id = ui.input().classes('hidden')
-            edit_desc = ui.input('Descrição').props('outlined bg-white').classes('w-full')
-            edit_val = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('w-full')
-            edit_conta = ui.select(options=contas_opts, label='Conta / Ação').props('outlined bg-white').classes('w-full')
-
-            def validar_e_confirmar_edicao():
-                if not edit_desc.value or edit_val.value is None or not edit_conta.value:
-                    ui.notify('Preencha todos os campos!', color='warning')
-                    return
-                confirm_edit_dialog.open()
-
-            with ui.row().classes('w-full justify-end gap-2 mt-2'):
-                ui.button('CANCELAR', on_click=modal_editar.close).props('flat color=grey')
-                ui.button('SALVAR ALTERAÇÕES', on_click=validar_e_confirmar_edicao).props('color=primary unelevated')
-
-        # --- MODAL DE CONFIRMAÇÃO DE EXCLUSÃO ---
-        item_para_deletar = {'id': None}
-        with ui.dialog() as confirm_delete_dialog, ui.card().classes('p-6 gap-4'):
-            ui.label('Confirmar Exclusão').classes('text-lg font-bold text-red-700')
-            ui.label('Tem certeza que deseja excluir esta receita? Esta ação não pode ser desfeita.')
-            with ui.row().classes('w-full justify-end gap-2'):
-                ui.button('Cancelar', on_click=confirm_delete_dialog.close).props('flat color=grey')
-                def executar_exclusao():
-                    if item_para_deletar['id']:
-                        supabase.table('fato_receitas').delete().eq('id', item_para_deletar['id']).execute()
-                        ui.notify('Receita removida!', color='negative')
-                        confirm_delete_dialog.close()
-                        ui.navigate.reload()
-                ui.button('Excluir', on_click=executar_exclusao).props('color=red unelevated')
-
-        # --- CARREGAMENTO DAS LINHAS DA TABELA ---
         res_receitas = supabase.table('fato_receitas').select("*, dim_contas(nome)").eq('user_id', user_id).order('created_at', desc=True).execute()
-        
         rows = [{
             'id': r['id'],
             'descricao': r['descricao'],
             'valor': f"R$ {r['valor']:.2f}",
-            'valor_raw': r['valor'],
-            'conta_id': r.get('conta_id'),
             'conta': r['dim_contas']['nome'] if r.get('dim_contas') else 'N/A'
         } for r in (res_receitas.data or [])]
 
@@ -390,28 +322,18 @@ def receitas_page():
 
         grid = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full mt-4')
         grid.props('no-data-label="Nenhuma receita cadastrada"')
-        
         grid.add_slot('body-cell-id', '''
             <q-td :props="props">
-                <q-btn icon="edit" size="sm" color="primary" flat @click="$parent.$emit('editar', props.row)" />
                 <q-btn icon="delete" size="sm" color="red" flat @click="$parent.$emit('deletar', props.row)" />
             </q-td>
         ''')
 
-        def abrir_edicao_grid(msg):
-            row = msg.args
-            edit_id.value = str(row['id'])
-            edit_desc.value = row['descricao']
-            edit_val.value = row['valor_raw']
-            edit_conta.value = row['conta_id']
-            modal_editar.open()
+        def deletar_receita(msg):
+            supabase.table('fato_receitas').delete().eq('id', msg.args['id']).execute()
+            ui.notify('Receita removida!', color='negative')
+            ui.navigate.reload()
 
-        def solicitar_delecao(msg):
-            item_para_deletar['id'] = msg.args['id']
-            confirm_delete_dialog.open()
-
-        grid.on('editar', abrir_edicao_grid)
-        grid.on('deletar', solicitar_delecao)
+        grid.on('deletar', deletar_receita)
 
 # --- DESPESAS (CADASTRO PREVISTO) ---
 @ui.page('/despesas')
@@ -605,6 +527,12 @@ def despesas_page():
         grid.on('editar', abrir_edicao)
         grid.on('deletar', deletar_despesa)
 
+# --- FUNÇÃO AUXILIAR DE FORMATAÇÃO PT-BR ---
+def formatar_br(valor):
+    try:
+        return f"{float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return "0,00"
 
 # --- TELA DE PLANEJAMENTO / FILTRO MENSAL ---
 @ui.page('/planejar')
@@ -1213,13 +1141,12 @@ ui.add_head_html('''
 # ==============================================================================
 # INICIALIZAÇÃO DO SERVIDOR (ÚLTIMAS LINHAS DO ARQUIVO)
 # ==============================================================================
-
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
     ui.run(
         title='Controle Financeiro',
         favicon=FAVICON_PATH if os.path.exists(FAVICON_PATH) else None,
-        storage_secret='minha_chave_secreta_local_123',
+        storage_secret='sb_publishable_5tNFiKOy_ONpFiccZcpc3A_wucCPK9h',
         host='0.0.0.0',
         port=port,
         reload=False

@@ -2,7 +2,6 @@ import os
 import re
 import threading
 import smtplib
-
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,11 +11,6 @@ from email.mime.multipart import MIMEMultipart
 from nicegui import app, ui
 from supabase import create_client, Client
 
-import logging
-
-# Silencia avisos inofensivos de desconexão de socket no terminal
-logging.getLogger("asyncio").setLevel(logging.CRITICAL)
-
 def formatar_br(valor) -> str:
     try:
         val = float(valor or 0)
@@ -24,21 +18,15 @@ def formatar_br(valor) -> str:
     except (ValueError, TypeError):
         return "0,00"
 
-import os
-from dotenv import load_dotenv
-
-# Carrega as variáveis do arquivo .env
-load_dotenv()
-
 # --- CONFIGURAÇÕES ---
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mpqkefsjclczhhjhirgt.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = "https://mpqkefsjclczhhjhirgt.supabase.co"
+SUPABASE_KEY = "sb_publishable_5tNfIkOy_ONpFiccZcpc3A_wucCPk9h" 
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 ADMIN_EMAIL = "w.batista.brasileiro@gmail.com"
-GMAIL_USER = os.getenv("GMAIL_USER")
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS")
+
+GMAIL_USER = "w.batista.brasileiro@gmail.com"
+GMAIL_APP_PASS = "svecygnzudcfwgzq"
 
 MESES_NOMES = {
     1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
@@ -107,7 +95,7 @@ def menu_drawer():
 
             # --- SEÇÃO 1: EXECUÇÃO ---
             with ui.column().classes('w-full gap-1'):
-                ui.label('MONITORAMENTO').classes('text-[10px] font-bold tracking-wider text-slate-400 uppercase px-3 mb-1')
+                ui.label('EXECUÇÃO').classes('text-[10px] font-bold tracking-wider text-slate-400 uppercase px-3 mb-1')
 
                 # Saúde Financeira
                 ui.button(
@@ -191,83 +179,74 @@ def cabecalho_app(drawer):
 # --- LOGIN ---
 @ui.page('/login')
 def login_page():
+    def try_login():
+        email_clean = email.value.strip().lower() if email.value else ""
+        senha_clean = password.value.strip() if password.value else ""
+
+        if not email_valido(email_clean):
+            ui.notify('Digite um e-mail válido.', color='warning')
+            return
+
+        try:
+            res = supabase.table('perfis_usuarios').select("*").eq('email', email_clean).execute()
+            if res.data:
+                usr = res.data[0]
+                if usr['senha'] != senha_clean:
+                    ui.notify('Senha incorreta!', color='negative')
+                    return
+                if not usr.get('ativo', True):
+                    ui.notify('Usuário INATIVO.', color='warning')
+                    return
+
+                app.storage.user['user_id'] = usr['id']
+                app.storage.user['email'] = usr['email']
+                ui.navigate.to('/')
+            else:
+                ui.notify('Usuário não encontrado.', color='negative')
+        except Exception as ex:
+            ui.notify(f'Erro no login: {ex}', color='negative')
+
     def abrir_modal_solicitacao():
-        with ui.dialog() as dialog, ui.card().classes('w-full max-w-sm p-4'):
-            ui.label('Solicitar Acesso').classes('text-xl font-bold text-gray-800 mb-2')
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-sm p-6'):
+            ui.label('🔑 Solicitar Acesso').classes('text-xl font-bold text-gray-800 mb-2')
             solicita_email = ui.input('E-mail').props('outlined').classes('w-full mb-2')
             solicita_senha = ui.input('Senha desejada', password=True, password_toggle_button=True).props('outlined').classes('w-full mb-4')
-
+            
             async def processar_solicitacao():
-                email_txt = (solicita_email.value or "").strip().lower()
-                senha_txt = (solicita_senha.value or "").strip()
-
-                if not email_valido(email_txt) or not senha_txt:
+                email_txt = solicita_email.value.strip().lower() if solicita_email.value else ""
+                if not email_valido(email_txt) or not solicita_senha.value:
                     ui.notify('Preencha os campos corretamente!', color='warning')
                     return
 
-                # Captura dados antes de fechar a tela
-                user_agent = str(ui.context.client.environ.get('HTTP_USER_AGENT', 'Dispositivo Móvel'))[:150]
-                loc_text = "Não informada"
-
+                user_agent = ui.context.client.environ.get('HTTP_USER_AGENT', 'Desconhecido')
+                ip_cliente = ui.context.client.environ.get('REMOTE_ADDR', '')
+                loc_text = "Desconhecida"
                 try:
-                    ip_cliente = ui.context.client.environ.get('REMOTE_ADDR', '')
-                    ip_data = requests.get(f'https://ipapi.co/{ip_cliente}/json/', timeout=2).json()
-                    loc_text = f"{ip_data.get('city')}, {ip_data.get('region')}"
+                    ip_data = requests.get(f'https://ipapi.co/{ip_cliente}/json/', timeout=3).json()
+                    loc_text = f"{ip_data.get('city')}, {ip_data.get('region')} - {ip_data.get('country_name')}"
                 except:
                     pass
 
-                # 1. Notifica o usuário e fecha o modal IMEDIATAMENTE (evita travar no mobile)
-                ui.notify('Processando solicitação...', color='info')
+                supabase.table('solicitacoes_acesso').insert({
+                    'created_at': obter_hora_brasilia().isoformat(),
+                    'email': email_txt,
+                    'senha_temporaria': solicita_senha.value.strip(),
+                    'dispositivo': user_agent[:150],
+                    'localizacao': loc_text
+                }).execute()
+
+                enviar_notificacao_email(email_txt, user_agent[:150], loc_text)
+                ui.notify('Solicitação enviada!', color='positive')
                 dialog.close()
-
-                # 2. Insere no Supabase
-                try:
-                    supabase.table('solicitacoes_acesso').insert({
-                        'created_at': obter_hora_brasilia().isoformat(),
-                        'email': email_txt,
-                        'senha_temporaria': senha_txt,
-                        'dispositivo': user_agent,
-                        'localizacao': loc_text
-                    }).execute()
-                except Exception as e:
-                    print(f"Erro ao salvar no banco: {e}")
-
-                # 3. Dispara o e-mail
-                try:
-                    enviar_notificacao_email(email_txt, user_agent, loc_text)
-                    ui.notify('Solicitação enviada com sucesso!', color='positive')
-                except Exception as e:
-                    print(f"Erro ao enviar e-mail: {e}")
-                    ui.notify('Solicitação registrada no banco!', color='positive')
 
             ui.button('ENVIAR SOLICITAÇÃO', on_click=processar_solicitacao).classes('w-full bg-blue-600 text-white font-bold mb-2')
             ui.button('CANCELAR', on_click=dialog.close).props('flat').classes('w-full text-gray-600')
-        
         dialog.open()
 
-    # --- CARD DE LOGIN E FUNÇÃO TRY_LOGIN ---
     with ui.card().classes('w-11/12 max-w-sm absolute-center p-6 shadow-xl rounded-xl'):
         ui.label('Controle Financeiro').classes('text-2xl font-bold text-blue-800 text-center w-full mb-4')
         email = ui.input('E-mail').props('outlined').classes('w-full mb-2')
         password = ui.input('Senha', password=True, password_toggle_button=True).props('outlined').classes('w-full mb-4')
-
-        def try_login():
-            email_val = email.value.strip().lower() if email.value else ""
-            pwd_val = password.value.strip() if password.value else ""
-
-            res = supabase.table('perfis_usuarios').select("*").eq('email', email_val).execute()
-            users = res.data or []
-
-            if users and users[0].get('senha') == pwd_val:
-                if not users[0].get('ativo', True):
-                    ui.notify('Usuário inativo! Fale com o administrador.', color='negative')
-                    return
-                app.storage.user['user_id'] = users[0]['id']
-                app.storage.user['email'] = users[0]['email']
-                ui.navigate.to('/')
-            else:
-                ui.notify('E-mail ou senha incorretos!', color='negative')
-
         ui.button('ENTRAR', on_click=try_login).classes('w-full bg-blue-600 text-white font-bold mb-3')
         ui.separator().classes('my-2')
         ui.button('SOLICITAR ACESSO', on_click=abrir_modal_solicitacao).props('flat dense').classes('w-full text-blue-500 font-medium text-xs mt-2')
@@ -283,14 +262,12 @@ def receitas_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
-    # Busca dinâmica de contas no Supabase
     contas_res = supabase.table('dim_contas').select("*").order('nome').execute()
     contas_opts = {c['id']: c['nome'] for c in (contas_res.data or [])}
 
     with ui.column().classes('w-full max-w-4xl mx-auto p-3 sm:p-4 gap-4'):
-        ui.label('💵 Planejar Receitas').classes('text-xl sm:text-2xl font-bold text-green-800')
+        ui.label('💵 Gestão de Receitas').classes('text-xl sm:text-2xl font-bold text-green-800')
 
-        # --- FORMULÁRIO DE NOVA RECEITA ---
         with ui.card().classes('w-full p-4 border border-green-200 rounded-lg shadow-sm bg-green-50'):
             ui.label('Nova Receita').classes('text-lg font-bold text-green-900 mb-2')
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center'):
@@ -313,71 +290,11 @@ def receitas_page():
 
             ui.button('Salvar Receita', on_click=salvar_receita, icon='add').classes('w-full sm:w-auto bg-green-700 text-white font-bold mt-2')
 
-        # --- MODAL DE CONFIRMAÇÃO DE EDIÇÃO ---
-        with ui.dialog() as confirm_edit_dialog, ui.card().classes('p-6 gap-4'):
-            ui.label('Confirmar Alteração').classes('text-lg font-bold text-slate-800')
-            ui.label('Deseja realmente salvar as alterações feitas nesta receita?')
-            with ui.row().classes('w-full justify-end gap-2'):
-                ui.button('Cancelar', on_click=confirm_edit_dialog.close).props('flat color=grey')
-                def executar_atualizacao():
-                    try:
-                        supabase.table('fato_receitas').update({
-                            'descricao': edit_desc.value.strip(),
-                            'valor': float(edit_val.value),
-                            'conta_id': edit_conta.value
-                        }).eq('id', edit_id.value).execute()
-
-                        ui.notify('Receita atualizada com sucesso!', color='positive')
-                        confirm_edit_dialog.close()
-                        modal_editar.close()
-                        ui.navigate.reload()
-                    except Exception as err:
-                        ui.notify(f'Erro ao atualizar: {err}', color='negative')
-                ui.button('Confirmar', on_click=executar_atualizacao).props('color=primary unelevated')
-
-        # --- MODAL DE EDIÇÃO ---
-        with ui.dialog() as modal_editar, ui.card().classes('w-full max-w-md p-6 gap-4'):
-            ui.label('Editar Receita').classes('text-xl font-bold text-slate-800')
-            
-            edit_id = ui.input().classes('hidden')
-            edit_desc = ui.input('Descrição').props('outlined bg-white').classes('w-full')
-            edit_val = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('w-full')
-            edit_conta = ui.select(options=contas_opts, label='Conta / Ação').props('outlined bg-white').classes('w-full')
-
-            def validar_e_confirmar_edicao():
-                if not edit_desc.value or edit_val.value is None or not edit_conta.value:
-                    ui.notify('Preencha todos os campos!', color='warning')
-                    return
-                confirm_edit_dialog.open()
-
-            with ui.row().classes('w-full justify-end gap-2 mt-2'):
-                ui.button('CANCELAR', on_click=modal_editar.close).props('flat color=grey')
-                ui.button('SALVAR ALTERAÇÕES', on_click=validar_e_confirmar_edicao).props('color=primary unelevated')
-
-        # --- MODAL DE CONFIRMAÇÃO DE EXCLUSÃO ---
-        item_para_deletar = {'id': None}
-        with ui.dialog() as confirm_delete_dialog, ui.card().classes('p-6 gap-4'):
-            ui.label('Confirmar Exclusão').classes('text-lg font-bold text-red-700')
-            ui.label('Tem certeza que deseja excluir esta receita? Esta ação não pode ser desfeita.')
-            with ui.row().classes('w-full justify-end gap-2'):
-                ui.button('Cancelar', on_click=confirm_delete_dialog.close).props('flat color=grey')
-                def executar_exclusao():
-                    if item_para_deletar['id']:
-                        supabase.table('fato_receitas').delete().eq('id', item_para_deletar['id']).execute()
-                        ui.notify('Receita removida!', color='negative')
-                        confirm_delete_dialog.close()
-                        ui.navigate.reload()
-                ui.button('Excluir', on_click=executar_exclusao).props('color=red unelevated')
-
-        # --- CARREGAMENTO DAS LINHAS DA TABELA ---
         res_receitas = supabase.table('fato_receitas').select("*, dim_contas(nome)").eq('user_id', user_id).order('created_at', desc=True).execute()
-        
         rows = [{
             'id': r['id'],
             'descricao': r['descricao'],
             'valor': f"R$ {r['valor']:.2f}",
-            'valor_raw': r['valor'],
-            'conta_id': r.get('conta_id'),
             'conta': r['dim_contas']['nome'] if r.get('dim_contas') else 'N/A'
         } for r in (res_receitas.data or [])]
 
@@ -390,28 +307,18 @@ def receitas_page():
 
         grid = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full mt-4')
         grid.props('no-data-label="Nenhuma receita cadastrada"')
-        
         grid.add_slot('body-cell-id', '''
             <q-td :props="props">
-                <q-btn icon="edit" size="sm" color="primary" flat @click="$parent.$emit('editar', props.row)" />
                 <q-btn icon="delete" size="sm" color="red" flat @click="$parent.$emit('deletar', props.row)" />
             </q-td>
         ''')
 
-        def abrir_edicao_grid(msg):
-            row = msg.args
-            edit_id.value = str(row['id'])
-            edit_desc.value = row['descricao']
-            edit_val.value = row['valor_raw']
-            edit_conta.value = row['conta_id']
-            modal_editar.open()
+        def deletar_receita(msg):
+            supabase.table('fato_receitas').delete().eq('id', msg.args['id']).execute()
+            ui.notify('Receita removida!', color='negative')
+            ui.navigate.reload()
 
-        def solicitar_delecao(msg):
-            item_para_deletar['id'] = msg.args['id']
-            confirm_delete_dialog.open()
-
-        grid.on('editar', abrir_edicao_grid)
-        grid.on('deletar', solicitar_delecao)
+        grid.on('deletar', deletar_receita)
 
 # --- DESPESAS (CADASTRO PREVISTO) ---
 @ui.page('/despesas')
@@ -431,23 +338,23 @@ def despesas_page():
     pgtos_opts = {p['id']: p['nome'] for p in (pgtos_res.data or [])}
 
     rec_res = supabase.table('fato_receitas').select("*").eq('user_id', user_id).execute()
-    rec_opts = {r['id']: f"{r['descricao']} (R$ {formatar_br(r['valor'])})" for r in (rec_res.data or [])}
+    rec_opts = {r['id']: f"{r['descricao']} (R$ {r['valor']:.2f})" for r in (rec_res.data or [])}
 
     with ui.column().classes('w-full max-w-6xl mx-auto p-3 sm:p-4 gap-4'):
-        ui.label('🛒 Planejar despesas').classes('text-xl sm:text-2xl font-bold text-red-800')
+        ui.label('🛒 Cadastro de Despesas Previstas').classes('text-xl sm:text-2xl font-bold text-red-800')
 
         with ui.card().classes('w-full p-4 border border-red-200 rounded-lg shadow-sm bg-white border-slate-200'):
             ui.label('Cadastrar Nova Despesa').classes('text-lg font-bold text-red-900 mb-2')
             
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center'):
-                desc = ui.input('Descrição da Despesa').props('outlined bg-white').classes('w-full sm:flex-2')
+                desc = ui.input('Descrição').props('outlined bg-white').classes('w-full sm:flex-2')
                 valor = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('w-full sm:w-32')
-                dia_limite = ui.input('Dia do Vencimento').props('outlined bg-white').classes('w-full sm:w-40')
+                dia_limite = ui.input('Dia Limite').props('outlined bg-white').classes('w-full sm:w-40')
 
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center mt-2'):
-                conta_sel = ui.select(options=contas_opts, label='Fonte de pagamento').props('outlined bg-white').classes('w-full sm:flex-1')
-                pgto_sel = ui.select(options=pgtos_opts, label='Forma de Pagamento').props('outlined bg-white').classes('w-full sm:flex-1')
-                rec_sel = ui.select(options=rec_opts, label='Receita utilizada para o pagamento').props('outlined bg-white').classes('w-full sm:flex-1')
+                conta_sel = ui.select(options=contas_opts, label='Ação / Conta').props('outlined bg-white').classes('w-full sm:flex-1')
+                pgto_sel = ui.select(options=pgtos_opts, label='Forma Pgto').props('outlined bg-white').classes('w-full sm:flex-1')
+                rec_sel = ui.select(options=rec_opts, label='Receita que Saldará').props('outlined bg-white').classes('w-full sm:flex-1')
 
             ui.label('Meses em que a despesa ocorre:').classes('text-sm font-bold text-gray-700 mt-2')
             
@@ -486,8 +393,6 @@ def despesas_page():
             ui.button('Salvar Despesa', on_click=salvar_despesa, icon='add').classes('w-full sm:w-auto bg-red-700 text-white font-bold mt-3')
 
         res_desp = supabase.table('fato_despesas').select("*, dim_contas(nome), dim_formas_pgto(nome), fato_receitas(descricao)").eq('user_id', user_id).order('created_at', desc=True).execute()
-        despesas_raw = res_desp.data or []
-
         rows = [{
             'id': d['id'],
             'descricao': d['descricao'],
@@ -496,8 +401,8 @@ def despesas_page():
             'receita': d['fato_receitas']['descricao'] if d.get('fato_receitas') else 'N/A',
             'dia_limite': d.get('dia_limite', '-'),
             'meses': d.get('meses', 'Todos'),
-            'valor': f"R$ {formatar_br(d['valor'])}"
-        } for d in despesas_raw]
+            'valor': f"R$ {d['valor']:.2f}"
+        } for d in (res_desp.data or [])]
 
         cols = [
             {'name': 'descricao', 'label': 'Descrição', 'field': 'descricao', 'align': 'left'},
@@ -507,106 +412,26 @@ def despesas_page():
             {'name': 'dia_limite', 'label': 'Dia Limite', 'field': 'dia_limite', 'align': 'center'},
             {'name': 'meses', 'label': 'Meses', 'field': 'meses', 'align': 'center'},
             {'name': 'valor', 'label': 'Valor', 'field': 'valor', 'align': 'right'},
-            {'name': 'id', 'label': 'Ações', 'field': 'id', 'align': 'center'}
+            {'name': 'id', 'label': '', 'field': 'id', 'align': 'right'}
         ]
 
         grid = ui.table(columns=cols, rows=rows, row_key='id').classes('w-full mt-4')
         grid.props('no-data-label="Nenhuma despesa cadastrada"')
         grid.add_slot('body-cell-id', '''
             <q-td :props="props">
-                <q-btn icon="edit" size="sm" color="blue" flat @click="$parent.$emit('editar', props.row)" />
                 <q-btn icon="delete" size="sm" color="red" flat @click="$parent.$emit('deletar', props.row)" />
             </q-td>
         ''')
 
-        # --- DIÁLOGO DE EDIÇÃO DE DESPESA ---
-        dialog_edit = ui.dialog()
-        with dialog_edit, ui.card().classes('w-full max-w-2xl p-4'):
-            ui.label('✏️ Editar Despesa').classes('text-lg font-bold text-blue-900 mb-2')
-            
-            edit_id = ui.input().classes('hidden')
-            edit_desc = ui.input('Descrição').props('outlined bg-white').classes('w-full')
-            
-            with ui.row().classes('w-full gap-2'):
-                edit_valor = ui.number('Valor (R$)', format='%.2f').props('outlined bg-white').classes('flex-1')
-                edit_dia = ui.input('Dia do Vencimento').props('outlined bg-white').classes('flex-1')
-
-            with ui.column().classes('w-full gap-2 mt-2'):
-                edit_conta = ui.select(options=contas_opts, label='Fonte de pagamento').props('outlined bg-white').classes('w-full')
-                edit_pgto = ui.select(options=pgtos_opts, label='Forma de Pagamento').props('outlined bg-white').classes('w-full')
-                edit_rec = ui.select(options=rec_opts, label='Receita utilizada').props('outlined bg-white').classes('w-full')
-
-            ui.label('Meses em que a despesa ocorre:').classes('text-sm font-bold text-gray-700 mt-2')
-            edit_meses_checks = {}
-            with ui.row().classes('w-full gap-2 wrap bg-white p-2 border rounded'):
-                for m_num, m_nome in MESES_NOMES.items():
-                    edit_meses_checks[m_num] = ui.checkbox(m_nome)
-
-            with ui.row().classes('w-full gap-2 mt-2'):
-                edit_ano_ini = ui.number('Ano Início', format='%d').props('outlined bg-white').classes('flex-1')
-                edit_ano_fim = ui.number('Ano Fim', format='%d').props('outlined bg-white').classes('flex-1')
-
-            def salvar_edicao():
-                if not edit_desc.value or not edit_valor.value or not edit_conta.value or not edit_rec.value:
-                    ui.notify('Preencha os campos obrigatórios!', color='warning')
-                    return
-
-                meses_str = "." + ".".join([str(m) for m, chk in edit_meses_checks.items() if chk.value]) + "."
-
-                try:
-                    supabase.table('fato_despesas').update({
-                        'descricao': edit_desc.value.strip(),
-                        'valor': float(edit_valor.value),
-                        'dia_limite': edit_dia.value.strip() if edit_dia.value else 'Indefinido',
-                        'conta_id': edit_conta.value,
-                        'forma_pgto_id': edit_pgto.value,
-                        'receita_id': edit_rec.value,
-                        'meses': meses_str,
-                        'ano_inicio': int(edit_ano_ini.value or 2025),
-                        'ano_fim': int(edit_ano_fim.value or 2200)
-                    }).eq('id', str(edit_id.value)).execute()
-
-                    ui.notify('Despesa atualizada com sucesso!', color='positive')
-                    dialog_edit.close()
-                    ui.navigate.reload()
-                except Exception as e:
-                    ui.notify(f'Erro ao atualizar: {e}', color='negative')
-
-            with ui.row().classes('w-full justify-end gap-2 mt-4'):
-                ui.button('Cancelar', on_click=dialog_edit.close).props('flat color=gray')
-                ui.button('Salvar Alterações', on_click=salvar_edicao, icon='save').classes('bg-blue-700 text-white font-bold')
-
-        def abrir_edicao(msg):
-            d_id = msg.args['id']
-            desp_orig = next((d for d in despesas_raw if str(d['id']) == str(d_id)), None)
-            
-            if desp_orig:
-                edit_id.value = str(desp_orig['id'])
-                edit_desc.value = desp_orig.get('descricao', '')
-                edit_valor.value = desp_orig.get('valor', 0.0)
-                edit_dia.value = desp_orig.get('dia_limite', '')
-                edit_conta.value = desp_orig.get('conta_id')
-                edit_pgto.value = desp_orig.get('forma_pgto_id')
-                edit_rec.value = desp_orig.get('receita_id')
-                edit_ano_ini.value = desp_orig.get('ano_inicio', 2025)
-                edit_ano_fim.value = desp_orig.get('ano_fim', 2200)
-
-                m_str = desp_orig.get('meses', '')
-                for m_num, chk in edit_meses_checks.items():
-                    chk.value = f".{m_num}." in m_str
-
-                dialog_edit.open()
 
         def deletar_despesa(msg):
-            supabase.table('fato_despesas').delete().eq('id', str(msg.args['id'])).execute()
+            supabase.table('fato_despesas').delete().eq('id', msg.args['id']).execute()
             ui.notify('Despesa removida!', color='negative')
             ui.navigate.reload()
 
-        grid.on('editar', abrir_edicao)
         grid.on('deletar', deletar_despesa)
 
-
-# --- TELA DE PLANEJAMENTO / FILTRO MENSAL ---
+# --- TELA DE PLANEJAMENTO / FILTRO MENSAL COM CHECKBOX DE BAIXA ---
 @ui.page('/planejar')
 def planejar_page():
     if not app.storage.user.get('user_id'):
@@ -621,34 +446,26 @@ def planejar_page():
     receitas_lista = rec_res.data or []
     
     rec_opts = {'TODAS': 'Todas as Receitas'}
-    rec_opts.update({r['id']: f"{r['descricao']} (R$ {formatar_br(r['valor'])})" for r in receitas_lista})
+    rec_opts.update({r['id']: f"{r['descricao']} (R$ {r['valor']:.2f})" for r in receitas_lista})
 
     mes_atual = datetime.now().month
     ano_atual = datetime.now().year
 
     with ui.column().classes('w-full max-w-5xl mx-auto p-2 sm:p-4 gap-4'):
-        ui.label('📅 Pagamentos do mês').classes('text-xl sm:text-2xl font-bold text-purple-800')
+        ui.label('📅 Planejamento & Filtro Mensal').classes('text-xl sm:text-2xl font-bold text-purple-800')
 
         # Filtros Responsivos
         with ui.card().classes('w-full p-3 sm:p-4 border rounded-lg bg-purple-50 shadow-sm'):
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center'):
                 sel_mes = ui.select(options=MESES_NOMES, value=mes_atual, label='Mês').props('outlined bg-white').classes('w-full sm:w-36')
                 sel_ano = ui.number('Ano', value=ano_atual, format='%d').props('outlined bg-white').classes('w-full sm:w-36')
-                
-                # Select Múltiplo para Receitas
-                sel_receita = ui.select(
-                    options=rec_opts, 
-                    value=['TODAS'], 
-                    multiple=True, 
-                    label='Filtrar por Receita'
-                ).props('outlined bg-white use-chips clearable').classes('w-full sm:flex-1')
+                sel_receita = ui.select(options=rec_opts, value='TODAS', label='Filtrar por Receita').props('outlined bg-white').classes('w-full sm:flex-1')
 
         # Áreas de Conteúdo
         container_lista = ui.column().classes('w-full gap-2')
-        container_subtotais_acao = ui.column().classes('w-full mt-2')
         container_resumo = ui.column().classes('w-full sm:flex-row gap-3 mt-2')
 
-        # Função de alternância isolada
+        # Função de alternância isolada sem dependência de lambda dinâmico
         def alternar_pago(despesa_id, mes, ano, novo_status):
             try:
                 if novo_status:
@@ -670,50 +487,27 @@ def planejar_page():
             except Exception as ex:
                 ui.notify(f"Erro ao atualizar status: {ex}", color='negative')
 
-        def ao_mudar_receita(e=None):
-            if hasattr(e, 'value'):
-                valores = e.value or []
-            elif isinstance(e, (list, tuple)):
-                valores = list(e)
-            else:
-                valores = sel_receita.value or []
-
-            if isinstance(valores, str):
-                valores = [valores]
-
-            if not valores:
-                sel_receita.value = ['TODAS']
-            elif 'TODAS' in valores and len(valores) > 1:
-                if valores[-1] == 'TODAS':
-                    sel_receita.value = ['TODAS']
-                else:
-                    sel_receita.value = [v for v in valores if v != 'TODAS']
-
-            atualizar_consulta()
-
-        def atualizar_consulta(e=None):
+        def atualizar_consulta():
             container_lista.clear()
-            container_subtotais_acao.clear()
             container_resumo.clear()
 
             m_val = sel_mes.value
             a_val = int(sel_ano.value or ano_atual)
-            
-            r_vals = sel_receita.value or ['TODAS']
-            if not isinstance(r_vals, list):
-                r_vals = [r_vals]
+            r_val = sel_receita.value
 
+            # Busca despesas do usuário
             query = supabase.table('fato_despesas').select("*, dim_contas(nome), dim_formas_pgto(nome), fato_receitas(id, descricao, valor)").eq('user_id', user_id)
+            if r_val != 'TODAS':
+                query = query.eq('receita_id', r_val)
+
             res = query.execute()
             despesas_todas = res.data or []
 
-            if 'TODAS' not in r_vals:
-                r_vals_ids = [int(v) if str(v).isdigit() else v for v in r_vals]
-                despesas_todas = [d for d in despesas_todas if d.get('receita_id') in r_vals_ids]
-
+            # Busca quais foram pagas neste mês/ano
             pagas_res = supabase.table('fato_despesas_pagas').select('despesa_id').eq('user_id', user_id).eq('mes', m_val).eq('ano', a_val).execute()
             ids_pagas = {p['despesa_id'] for p in (pagas_res.data or [])}
 
+            # Filtra Sazonalidade
             str_mes_busca = f".{m_val}."
             despesas_filtradas = []
             for d in despesas_todas:
@@ -725,7 +519,6 @@ def planejar_page():
                     despesas_filtradas.append(d)
 
             total_desp = 0.0
-            subtotais_acao = {}
 
             with container_lista:
                 if not despesas_filtradas:
@@ -742,59 +535,49 @@ def planejar_page():
                         rec_p = d['fato_receitas']['descricao'] if d.get('fato_receitas') else 'N/A'
                         dia_l = d.get('dia_limite', '-')
 
-                        subtotais_acao[conta_p] = subtotais_acao.get(conta_p, 0.0) + val
-
+                        # Card Responsivo
                         with ui.card().classes(f'w-full p-3 border rounded-lg shadow-sm {"bg-gray-100 opacity-60" if esta_pago else "bg-white"} transition-all'):
-                            with ui.row().classes('w-full justify-between items-center flex-wrap gap-2'):
-                                with ui.row().classes('items-center gap-2 flex-1 min-w-[180px]'):
+                            with ui.row().classes('w-full justify-between items-center no-wrap'):
+                                with ui.row().classes('items-center gap-2 flex-1 min-w-0'):
+                                    
+                                    # Handler explícito atribuindo argumentos fixos
                                     def make_handler(target_id=d_id):
                                         return lambda e: alternar_pago(target_id, m_val, a_val, e.value)
 
                                     ui.checkbox('', value=esta_pago, on_change=make_handler())
                                     
-                                    with ui.column().classes('gap-0 flex-1 min-w-0'):
-                                        ui.label(d['descricao']).classes(f'font-bold text-sm sm:text-base leading-tight break-words {"line-through text-gray-500" if esta_pago else "text-gray-800"}')
-                                        ui.label(f"Venc: {dia_l} | {forma_p}").classes('text-xs text-gray-500 break-words')
+                                    with ui.column().classes('gap-0 min-w-0 flex-1'):
+                                        ui.label(d['descricao']).classes(f'font-bold text-sm sm:text-base truncate {"line-through text-gray-500" if esta_pago else "text-gray-800"}')
+                                        ui.label(f"Venc: {dia_l} | {forma_p}").classes('text-xs text-gray-500 truncate')
 
-                                with ui.column().classes('items-end gap-0 ml-auto text-right min-w-[120px]'):
-                                    ui.label(f"R$ {formatar_br(val)}").classes(f'font-black text-sm sm:text-base {"line-through text-gray-400" if esta_pago else "text-red-700"}')
-                                    ui.label(f"{conta_p} ({rec_p})").classes('text-xs text-purple-700 font-medium break-words max-w-[180px] text-right')
+                                with ui.column().classes('items-end gap-0 pl-2'):
+                                    ui.label(f"R$ {val:,.2f}").classes(f'font-black text-sm sm:text-base {"line-through text-gray-400" if esta_pago else "text-red-700"}')
+                                    ui.label(f"{conta_p} ({rec_p})").classes('text-xs text-purple-700 font-medium truncate max-w-[120px] text-right')
 
-            # --- SUBTOTAIS POR MEIO DE PAGAMENTO ---
-            with container_subtotais_acao:
-                if subtotais_acao:
-                    ui.label('📌 Valores por meio de pagamento').classes('text-sm font-bold text-purple-900 mb-1')
-                    with ui.row().classes('w-full gap-2 flex-wrap'):
-                        for acao, total_acao in subtotais_acao.items():
-                            with ui.card().classes('bg-purple-50 p-2.5 border border-purple-200 rounded-lg shadow-xs min-w-[140px] flex-1'):
-                                ui.label(acao).classes('text-xs font-bold text-purple-900 truncate')
-                                ui.label(f'R$ {formatar_br(total_acao)}').classes('text-base font-extrabold text-slate-800')
-
-            # Resumo e Totais Gerais
-            if 'TODAS' in r_vals:
+            # Resumo e Totais
+            if r_val == 'TODAS':
                 capital_total = sum([rec['valor'] for rec in receitas_lista])
             else:
-                r_vals_ids = [int(v) if str(v).isdigit() else v for v in r_vals]
-                capital_total = sum([rec['valor'] for rec in receitas_lista if rec['id'] in r_vals_ids])
+                capital_total = sum([rec['valor'] for rec in receitas_lista if rec['id'] == r_val])
 
             sobra = capital_total - total_desp
 
             with container_resumo:
                 with ui.card().classes('w-full sm:flex-1 bg-purple-100 p-3 sm:p-4 border rounded-lg shadow-sm'):
-                    ui.label('TOTAL RECEITA').classes('text-xs font-bold text-purple-900 uppercase')
-                    ui.label(f'R$ {formatar_br(capital_total)}').classes('text-lg sm:text-xl font-bold text-purple-950')
+                    ui.label('Capital / Receita Selecionada').classes('text-xs font-bold text-purple-900 uppercase')
+                    ui.label(f'R$ {capital_total:,.2f}').classes('text-lg sm:text-xl font-bold text-purple-950')
 
                 with ui.card().classes('w-full sm:flex-1 bg-red-100 p-3 sm:p-4 border rounded-lg shadow-sm'):
-                    ui.label('TOTAL DESPESAS DO MÊS').classes('text-xs font-bold text-red-900 uppercase')
-                    ui.label(f'R$ {formatar_br(total_desp)}').classes('text-lg sm:text-xl font-bold text-red-950')
+                    ui.label('Total Despesas do Mês').classes('text-xs font-bold text-red-900 uppercase')
+                    ui.label(f'R$ {total_desp:,.2f}').classes('text-lg sm:text-xl font-bold text-red-950')
 
                 with ui.card().classes(f'w-full sm:flex-1 {"bg-green-100 border-green-300" if sobra >= 0 else "bg-amber-100 border-amber-300"} p-3 sm:p-4 border rounded-lg shadow-sm'):
-                    ui.label('SALDO FINAL').classes('text-xs font-bold uppercase')
-                    ui.label(f'R$ {formatar_br(sobra)}').classes(f'text-lg sm:text-xl font-bold {"text-green-950" if sobra >= 0 else "text-amber-950"}')
+                    ui.label('Sobra / Falta').classes('text-xs font-bold uppercase')
+                    ui.label(f'R$ {sobra:,.2f}').classes(f'text-lg sm:text-xl font-bold {"text-green-950" if sobra >= 0 else "text-amber-950"}')
 
         sel_mes.on('update:model-value', atualizar_consulta)
         sel_ano.on('update:model-value', atualizar_consulta)
-        sel_receita.on('update:model-value', ao_mudar_receita)
+        sel_receita.on('update:model-value', atualizar_consulta)
 
         atualizar_consulta()
 
@@ -916,7 +699,7 @@ def admin_page():
         criar_gerenciador_dimensao("2. Formas de Pagamento", "dim_formas_pgto")
         criar_gerenciador_dimensao("3. Contas / Ações", "dim_contas")       
 
-# --- DASHBOARD PRINCIPAL (MODO CAPA SEGURO & MODERNO) ---
+# --- DASHBOARD PRINCIPAL COM FORMATAÇÃO PT-BR ---
 @ui.page('/')
 def main_page():
     if not app.storage.user.get('user_id'):
@@ -927,138 +710,45 @@ def main_page():
     cabecalho_app(drawer)
     user_id = app.storage.user.get('user_id')
 
-    # Estado de privacidade (Modo Seguro: ocultar valores por padrão ao abrir)
-    mostra_valores = {'visivel': False}
-
     rec_res = supabase.table('fato_receitas').select("*").eq('user_id', user_id).execute()
     receitas_lista = rec_res.data or []
     
     rec_opts = {'TODAS': 'Todas as Receitas'}
     rec_opts.update({r['id']: f"{r['descricao']} (R$ {formatar_br(r['valor'])})" for r in receitas_lista})
 
-    # Ano atual dinâmico
     ano_atual = datetime.now().year
 
-    # Determinar saudação com base no horário
-    hora = datetime.now().hour
-    if hora < 12:
-        saudacao = "Bom dia"
-        icone_saudacao = "wb_sunny"
-    elif hora < 18:
-        saudacao = "Boa tarde"
-        icone_saudacao = "wb_twilight"
-    else:
-        saudacao = "Boa noite"
-        icone_saudacao = "nights_stay"
+    with ui.column().classes('w-full max-w-5xl mx-auto p-2 sm:p-4 gap-4'):
+        ui.label('📊 Visão Geral Financeira').classes('text-xl sm:text-2xl font-bold text-gray-800')
 
-    with ui.column().classes('w-full max-w-5xl mx-auto p-3 sm:p-6 gap-6'):
-        
-        # --- 1. HERO CAPA MODERNA & SAUDAÇÃO ---
-        with ui.card().classes('w-full p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white shadow-xl relative overflow-hidden border border-slate-800'):
-            ui.element('div').classes('absolute -right-10 -bottom-10 w-60 h-60 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none')
-            ui.element('div').classes('absolute -left-10 -top-10 w-60 h-60 bg-blue-500/10 rounded-full blur-3xl pointer-events-none')
-
-            with ui.row().classes('w-full justify-between items-center z-10 wrap gap-4'):
-                with ui.column().classes('gap-1'):
-                    with ui.row().classes('items-center gap-2 text-indigo-300 font-medium text-sm sm:text-base'):
-                        #ui.icon(icone_saudacao, size='20px')
-                        #ui.label(f'{saudacao}!')
-                        ui.label('Saúde Financeira').classes('text-2xl sm:text-4xl font-extrabold tracking-tight text-white')
-                    ui.label('Gerencie suas metas e despesas com tranquilidade e privacidade.').classes('text-slate-400 text-xs sm:text-sm mt-1')
-
-                btn_privacidade = ui.button(
-                    icon='visibility_off', 
-                    on_click=lambda: alternar_privacidade()
-                ).props('round flat size=lg color=white').classes('bg-white/10 hover:bg-white/20 backdrop-blur-md transition-all')
-                btn_privacidade.tooltip('Alternar exibição de valores')
-
-        # --- 2. ACESSO RÁPIDO (TELAS EXISTENTES) ---
-        ui.label('⚡ Ações Rápidas').classes('text-lg font-bold text-slate-800 -mb-2')
-        with ui.row().classes('w-full grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4'):
-            
-            with ui.card().classes('p-4 rounded-xl border border-slate-200 hover:border-red-400 hover:shadow-md transition-all cursor-pointer bg-white items-center text-center group') \
-                    .on('click', lambda: ui.navigate.to('/despesas')):
-                ui.icon('add_shopping_cart', size='32px').classes('text-red-500 group-hover:scale-110 transition-transform mb-1')
-                ui.label('Nova Despesa').classes('font-semibold text-slate-700 text-xs sm:text-sm')
-
-            with ui.card().classes('p-4 rounded-xl border border-slate-200 hover:border-green-400 hover:shadow-md transition-all cursor-pointer bg-white items-center text-center group') \
-                    .on('click', lambda: ui.navigate.to('/receitas')):
-                ui.icon('attach_money', size='32px').classes('text-green-500 group-hover:scale-110 transition-transform mb-1')
-                ui.label('Nova Receita').classes('font-semibold text-slate-700 text-xs sm:text-sm')
-
-        # --- 3. PAINEL PROTEGIDO (VALORES & GRÁFICOS) ---
-        with ui.row().classes('w-full justify-between items-center mt-2'):
-            ui.label('📊 Visão Geral do Período').classes('text-lg font-bold text-slate-800')
-            
-        # Filtros
-        with ui.card().classes('w-full p-3 sm:p-4 border rounded-xl bg-slate-50 shadow-sm border-slate-200'):
+        with ui.card().classes('w-full p-3 sm:p-4 border rounded-lg bg-slate-50 shadow-sm'):
             with ui.column().classes('w-full sm:flex-row gap-3 items-stretch sm:items-center'):
-                sel_ano_ini = ui.number('Ano Início', value=ano_atual, format='%d').props('outlined bg-white step=1').classes('w-full sm:w-36')
-                sel_ano_fim = ui.number('Ano Fim', value=ano_atual, format='%d').props('outlined bg-white step=1').classes('w-full sm:w-36')
-                
-                sel_receita = ui.select(
-                    options=rec_opts, 
-                    value=['TODAS'], 
-                    multiple=True, 
-                    label='Filtrar por Receita'
-                ).props('outlined bg-white use-chips clearable').classes('w-full sm:flex-1')
+                sel_ano_ini = ui.number('Ano Início', value=ano_atual - 1, format='%d').props('outlined bg-white').classes('w-full sm:w-32')
+                sel_ano_fim = ui.number('Ano Fim', value=ano_atual, format='%d').props('outlined bg-white').classes('w-full sm:w-32')
+                sel_receita = ui.select(options=rec_opts, value='TODAS', label='Filtrar por Receita').props('outlined bg-white').classes('w-full sm:flex-1')
 
         container_cards = ui.column().classes('w-full sm:flex-row gap-3')
-        card_grafico1 = ui.card().classes('w-full p-2 sm:p-4 border rounded-xl shadow-sm bg-white')
-        card_grafico2 = ui.card().classes('w-full p-2 sm:p-4 border rounded-xl shadow-sm bg-white')
+        card_grafico1 = ui.card().classes('w-full p-2 sm:p-4 border rounded-lg shadow-sm bg-white')
+        card_grafico2 = ui.card().classes('w-full p-2 sm:p-4 border rounded-lg shadow-sm bg-white')
 
-        def alternar_privacidade():
-            mostra_valores['visivel'] = not mostra_valores['visivel']
-            btn_privacidade.props(f'icon={"visibility" if mostra_valores["visivel"] else "visibility_off"}')
-            atualizar_dashboard()
-
-        def ao_mudar_receita(e=None):
-            if hasattr(e, 'value'):
-                valores = e.value or []
-            elif isinstance(e, (list, tuple)):
-                valores = list(e)
-            else:
-                valores = sel_receita.value or []
-
-            if isinstance(valores, str):
-                valores = [valores]
-
-            if not valores:
-                sel_receita.value = ['TODAS']
-            elif 'TODAS' in valores and len(valores) > 1:
-                if valores[-1] == 'TODAS':
-                    sel_receita.value = ['TODAS']
-                else:
-                    sel_receita.value = [v for v in valores if v != 'TODAS']
-
-            atualizar_dashboard()
-
-        def mascarar_valor(valor_num):
-            if mostra_valores['visivel']:
-                return f"R$ {formatar_br(valor_num)}"
-            return "R$ ••••••"
-
-        def atualizar_dashboard(e=None):
+        def atualizar_dashboard():
             container_cards.clear()
             card_grafico1.clear()
             card_grafico2.clear()
 
-            a_ini = int(sel_ano_ini.value or ano_atual)
+            a_ini = int(sel_ano_ini.value or (ano_atual - 1))
             a_fim = int(sel_ano_fim.value or ano_atual)
-            
-            r_vals = sel_receita.value or ['TODAS']
-            if not isinstance(r_vals, list):
-                r_vals = [r_vals]
+            r_sel = sel_receita.value
 
             query_d = supabase.table('fato_despesas').select("*").eq('user_id', user_id)
+            if r_sel != 'TODAS':
+                query_d = query_d.eq('receita_id', r_sel)
             despesas = query_d.execute().data or []
 
-            if 'TODAS' in r_vals:
+            if r_sel == 'TODAS':
                 capital_mensal_base = sum([r['valor'] for r in receitas_lista])
             else:
-                r_vals_ids = [int(v) if str(v).isdigit() else v for v in r_vals]
-                despesas = [d for d in despesas if d.get('receita_id') in r_vals_ids]
-                capital_mensal_base = sum([r['valor'] for r in receitas_lista if r['id'] in r_vals_ids])
+                capital_mensal_base = sum([r['valor'] for r in receitas_lista if r['id'] == r_sel])
 
             eixo_x = []
             dados_despesas = []
@@ -1087,46 +777,27 @@ def main_page():
                     eixo_x.append(label_mes)
                     dados_despesas.append(round(total_desp_mes, 2))
                     dados_capital.append(round(capital_mensal_base, 2))
-
-                    val_acum = round(acumulado_saldo, 2)
-                    cor_barra = '#22c55e' if val_acum >= 0 else '#ef4444'
-                    
-                    dados_acumulado.append({
-                        'value': val_acum,
-                        'itemStyle': {
-                            'color': cor_barra,
-                            'borderRadius': [4, 4, 0, 0] if val_acum >= 0 else [0, 0, 4, 4]
-                        }
-                    })
+                    dados_acumulado.append(round(acumulado_saldo, 2))
 
             tot_receitas_periodo = sum(dados_capital)
             tot_despesas_periodo = sum(dados_despesas)
             saldo_periodo = tot_receitas_periodo - tot_despesas_periodo
 
-            # Definição das classes de cores do Card de Saldo Acumulado
-            if saldo_periodo >= 0:
-                card_saldo_classes = "bg-indigo-50 border-indigo-200"
-                texto_saldo_classes = "text-indigo-950"
-            else:
-                card_saldo_classes = "bg-red-50 border-red-200"
-                texto_saldo_classes = "text-red-600"
-
+            # Cards com valores formatados em R$ (PT-BR)
             with container_cards:
-                with ui.card().classes('w-full sm:flex-1 bg-emerald-50 border border-emerald-200 p-4 rounded-xl shadow-sm'):
-                    ui.label('TOTAL RECEITAS (PERÍODO)').classes('text-xs font-bold text-emerald-900 uppercase tracking-wider')
-                    ui.label(mascarar_valor(tot_receitas_periodo)).classes('text-lg sm:text-xl font-black text-emerald-950')
+                with ui.card().classes('w-full sm:flex-1 bg-green-100 p-3 sm:p-4 border rounded-lg shadow-sm'):
+                    ui.label('TOTAL RECEITAS (PERÍODO)').classes('text-xs font-bold text-green-900 uppercase')
+                    ui.label(f'R$ {formatar_br(tot_receitas_periodo)}').classes('text-lg sm:text-xl font-bold text-green-950')
 
-                with ui.card().classes('w-full sm:flex-1 bg-rose-50 border border-rose-200 p-4 rounded-xl shadow-sm'):
-                    ui.label('TOTAL DESPESAS (PERÍODO)').classes('text-xs font-bold text-rose-900 uppercase tracking-wider')
-                    ui.label(mascarar_valor(tot_despesas_periodo)).classes('text-lg sm:text-xl font-black text-rose-950')
+                with ui.card().classes('w-full sm:flex-1 bg-red-100 p-3 sm:p-4 border rounded-lg shadow-sm'):
+                    ui.label('TOTAL DESPESAS (PERÍODO)').classes('text-xs font-bold text-red-900 uppercase')
+                    ui.label(f'R$ {formatar_br(tot_despesas_periodo)}').classes('text-lg sm:text-xl font-bold text-red-950')
 
-                with ui.card().classes(f'w-full sm:flex-1 {card_saldo_classes} p-4 border rounded-xl shadow-sm'):
-                    ui.label('SALDO ACUMULADO').classes('text-xs font-bold uppercase tracking-wider text-slate-700')
-                    ui.label(mascarar_valor(saldo_periodo)).classes(f'text-lg sm:text-xl font-black {texto_saldo_classes}')
+                with ui.card().classes(f'w-full sm:flex-1 {"bg-blue-100 border-blue-300" if saldo_periodo >= 0 else "bg-amber-100 border-amber-300"} p-3 sm:p-4 border rounded-lg shadow-sm'):
+                    ui.label('SALDO ACUMULADO').classes('text-xs font-bold uppercase')
+                    ui.label(f'R$ {formatar_br(saldo_periodo)}').classes(f'text-lg sm:text-xl font-bold {"text-blue-950" if saldo_periodo >= 0 else "text-amber-950"}')
 
-            y_formatter = 'R$ {value}' if mostra_valores['visivel'] else '••••'
-
-            # --- GRÁFICO 1: Capital X Despesas ---
+# --- GRÁFICO 1: Capital X Despesas ---
             with card_grafico1:
                 ui.label('Capital X Despesas').classes('text-base sm:text-lg font-bold text-slate-800 mb-2')
                 ui.echart({
@@ -1139,7 +810,7 @@ def main_page():
                     'xAxis': {'type': 'category', 'data': eixo_x},
                     'yAxis': {
                         'type': 'value',
-                        'axisLabel': {'formatter': y_formatter}
+                        'axisLabel': {'formatter': 'R$ {value}'}
                     },
                     'series': [
                         {
@@ -1171,11 +842,12 @@ def main_page():
                     'xAxis': {'type': 'category', 'data': eixo_x},
                     'yAxis': {
                         'type': 'value',
-                        'axisLabel': {'formatter': y_formatter}
+                        'axisLabel': {'formatter': 'R$ {value}'}
                     },
                     'series': [{
                         'name': 'Saldo Acumulado',
                         'type': 'bar',
+                        'itemStyle': {'color': '#84cc16', 'borderRadius': [4, 4, 0, 0]},
                         'label': {'show': False},
                         'data': dados_acumulado
                     }]
@@ -1183,7 +855,7 @@ def main_page():
 
         sel_ano_ini.on('update:model-value', atualizar_dashboard)
         sel_ano_fim.on('update:model-value', atualizar_dashboard)
-        sel_receita.on('update:model-value', ao_mudar_receita)
+        sel_receita.on('update:model-value', atualizar_dashboard)
 
         atualizar_dashboard()
 
@@ -1213,13 +885,12 @@ ui.add_head_html('''
 # ==============================================================================
 # INICIALIZAÇÃO DO SERVIDOR (ÚLTIMAS LINHAS DO ARQUIVO)
 # ==============================================================================
-
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
     ui.run(
         title='Controle Financeiro',
         favicon=FAVICON_PATH if os.path.exists(FAVICON_PATH) else None,
-        storage_secret='minha_chave_secreta_local_123',
+        storage_secret='sb_publishable_5tNFiKOy_ONpFiccZcpc3A_wucCPK9h',
         host='0.0.0.0',
         port=port,
         reload=False

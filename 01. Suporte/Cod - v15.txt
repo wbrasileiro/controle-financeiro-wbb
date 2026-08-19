@@ -24,21 +24,15 @@ def formatar_br(valor) -> str:
     except (ValueError, TypeError):
         return "0,00"
 
-import os
-from dotenv import load_dotenv
-
-# Carrega as variáveis do arquivo .env
-load_dotenv()
-
 # --- CONFIGURAÇÕES ---
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mpqkefsjclczhhjhirgt.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = "https://mpqkefsjclczhhjhirgt.supabase.co"
+SUPABASE_KEY = "sb_publishable_5tNfIkOy_ONpFiccZcpc3A_wucCPk9h" 
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 ADMIN_EMAIL = "w.batista.brasileiro@gmail.com"
-GMAIL_USER = os.getenv("GMAIL_USER")
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS")
+
+GMAIL_USER = "w.batista.brasileiro@gmail.com"
+GMAIL_APP_PASS = "svecygnzudcfwgzq"
 
 MESES_NOMES = {
     1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
@@ -605,6 +599,12 @@ def despesas_page():
         grid.on('editar', abrir_edicao)
         grid.on('deletar', deletar_despesa)
 
+# --- FUNÇÃO AUXILIAR DE FORMATAÇÃO PT-BR ---
+def formatar_br(valor):
+    try:
+        return f"{float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return "0,00"
 
 # --- TELA DE PLANEJAMENTO / FILTRO MENSAL ---
 @ui.page('/planejar')
@@ -1213,13 +1213,12 @@ ui.add_head_html('''
 # ==============================================================================
 # INICIALIZAÇÃO DO SERVIDOR (ÚLTIMAS LINHAS DO ARQUIVO)
 # ==============================================================================
-
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
     ui.run(
         title='Controle Financeiro',
         favicon=FAVICON_PATH if os.path.exists(FAVICON_PATH) else None,
-        storage_secret='minha_chave_secreta_local_123',
+        storage_secret='sb_publishable_5tNFiKOy_ONpFiccZcpc3A_wucCPK9h',
         host='0.0.0.0',
         port=port,
         reload=False

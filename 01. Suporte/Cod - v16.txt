@@ -1213,13 +1213,12 @@ ui.add_head_html('''
 # ==============================================================================
 # INICIALIZAÇÃO DO SERVIDOR (ÚLTIMAS LINHAS DO ARQUIVO)
 # ==============================================================================
-
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
     ui.run(
         title='Controle Financeiro',
         favicon=FAVICON_PATH if os.path.exists(FAVICON_PATH) else None,
-        storage_secret='minha_chave_secreta_local_123',
+        storage_secret='sb_publishable_5tNFiKOy_ONpFiccZcpc3A_wucCPK9h',
         host='0.0.0.0',
         port=port,
         reload=False
