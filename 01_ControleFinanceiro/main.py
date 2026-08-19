@@ -3,6 +3,7 @@ import re
 import threading
 import smtplib
 import logging
+import asyncio
 
 import requests
 from datetime import datetime
@@ -13,6 +14,42 @@ from email.mime.multipart import MIMEMultipart
 from nicegui import app, ui
 from supabase import create_client, Client
 from dotenv import load_dotenv
+
+
+def enviar_notificacao_telegram(email_solicitante: str, dispositivo: str, localizacao: str):
+    """
+    Função que envia a notificação de acesso diretamente para o seu Telegram
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print("Aviso: TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID não definidos no .env")
+        return
+
+    # Mensagem formatada em HTML
+    mensagem = (
+        f"🚨 <b>NOVA SOLICITAÇÃO DE ACESSO</b>\n\n"
+        f"📧 <b>E-mail:</b> {email_solicitante}\n"
+        f"📱 <b>Dispositivo:</b> {dispositivo[:60]}\n"
+        f"📍 <b>Localização:</b> {localizacao}"
+    )
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": mensagem,
+        "parse_mode": "HTML"
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            print("Notificação enviada com sucesso no Telegram!")
+        else:
+            print(f"Erro ao enviar no Telegram: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Erro de conexão ao enviar notificação no Telegram: {e}")
 
 # Silencia avisos inofensivos de desconexão de socket no terminal
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -232,6 +269,7 @@ def login_page():
                 ui.notify('Processando solicitação...', color='info')
                 dialog.close()
 
+                # 1. Salva a solicitação no Supabase
                 try:
                     supabase.table('solicitacoes_acesso').insert({
                         'created_at': obter_hora_brasilia().isoformat(),
@@ -243,11 +281,17 @@ def login_page():
                 except Exception as e:
                     print(f"Erro ao salvar no banco: {e}")
 
+                # 2. Dispara Notificações em Segundo Plano (E-mail + Telegram)
                 try:
-                    enviar_notificacao_email(email_txt, user_agent, loc_text)
+                    # Envia e-mail em segundo plano
+                    asyncio.create_task(asyncio.to_thread(enviar_notificacao_email, email_txt, user_agent, loc_text))
+                    
+                    # Envia notificação no Telegram em segundo plano
+                    asyncio.create_task(asyncio.to_thread(enviar_notificacao_telegram, email_txt, user_agent, loc_text))
+                    
                     ui.notify('Solicitação enviada com sucesso!', color='positive')
                 except Exception as e:
-                    print(f"Erro ao enviar e-mail: {e}")
+                    print(f"Erro ao disparar notificações: {e}")
                     ui.notify('Solicitação registrada no banco!', color='positive')
 
             ui.button('ENVIAR SOLICITAÇÃO', on_click=processar_solicitacao).classes('w-full bg-blue-600 text-white font-bold mb-2')
