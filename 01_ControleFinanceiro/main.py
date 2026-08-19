@@ -1222,4 +1222,5 @@ if __name__ in {"__main__", "__mp_main__"}:
         host='0.0.0.0',
         port=port,
         reload=False
+        proxy_headers=True  # <--- Adicione esta linha!
     )
